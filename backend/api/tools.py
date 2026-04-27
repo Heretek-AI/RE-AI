@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -401,16 +401,149 @@ async def detect_tools():
     return results
 
 
-# Pydantic models for the install endpoint
+# Pydantic models for validate-path and install endpoints
 
 
-from pydantic import BaseModel
+import anyio
+
+from pydantic import BaseModel, Field
 
 
-class InstallRequest(BaseModel):
-    """Request to get install guidance for a tool."""
+class ValidatePathRequest(BaseModel):
+    """Request to validate a tool installation path."""
 
-    tool_id: str
+    tool_id: str = Field(..., description="Tool identifier (e.g. 'ida_pro', 'ghidra')")
+    path: str = Field(..., description="Absolute path to the tool executable")
+
+
+class ValidatePathResponse(BaseModel):
+    """Result of a tool path validation."""
+
+    valid: bool
+    error: Optional[str] = None
+    version: Optional[str] = None
+
+
+_KNOWN_VALIDATABLE_TOOLS = {"ida_pro", "ghidra"}
+
+
+def _validate_ida(path: str) -> ValidatePathResponse:
+    """Validate an IDA Pro installation by running a headless test.
+
+    Runs ``idat64 -c -A -T"$((1))"`` with a 30-second timeout.
+    Exit code 0 means the binary is functional.
+    """
+    bin_path = Path(path)
+    if not bin_path.is_file():
+        return ValidatePathResponse(valid=False, error="File not found")
+
+    if not os.access(str(bin_path), os.X_OK):
+        return ValidatePathResponse(valid=False, error="Permission denied")
+
+    logger.debug("Validating IDA Pro at %s", path)
+    try:
+        result = subprocess.run(
+            [str(bin_path), "-c", "-A", "-T" "$((1))"],
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            version = None
+            for line in (result.stdout or "").splitlines() + (result.stderr or "").splitlines():
+                if "version" in line.lower():
+                    version = line.strip()
+                    break
+            return ValidatePathResponse(valid=True, version=version)
+        else:
+            return ValidatePathResponse(
+                valid=False,
+                error=f"IDA returned exit code {result.returncode}",
+            )
+    except FileNotFoundError:
+        return ValidatePathResponse(valid=False, error="File not found")
+    except PermissionError:
+        return ValidatePathResponse(valid=False, error="Permission denied")
+    except subprocess.TimeoutExpired:
+        return ValidatePathResponse(valid=False, error="Validation timed out after 30s")
+    except OSError as exc:
+        return ValidatePathResponse(valid=False, error=str(exc))
+
+
+def _validate_ghidra(path: str) -> ValidatePathResponse:
+    """Validate a Ghidra installation by checking the analyzeHeadless binary.
+
+    First checks file existence and executability, then runs the binary
+    with ``--help`` to verify it's a functioning Ghidra headless script.
+    """
+    bin_path = Path(path)
+    if not bin_path.is_file():
+        return ValidatePathResponse(valid=False, error="File not found")
+
+    if not os.access(str(bin_path), os.X_OK):
+        return ValidatePathResponse(valid=False, error="Permission denied")
+
+    logger.debug("Validating Ghidra at %s", path)
+    try:
+        result = subprocess.run(
+            [str(bin_path), "--help"],
+            timeout=10,
+            capture_output=True,
+            text=True,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode in (0, 1) and (
+            "analyzeHeadless" in output or "Ghidra" in output or "Usage" in output
+        ):
+            version = None
+            for line in output.splitlines():
+                if "version" in line.lower():
+                    version = line.strip()
+                    break
+            return ValidatePathResponse(valid=True, version=version)
+        else:
+            return ValidatePathResponse(
+                valid=False,
+                error=(
+                    f"Binary did not respond as analyzeHeadless "
+                    f"(exit {result.returncode})"
+                ),
+            )
+    except FileNotFoundError:
+        return ValidatePathResponse(valid=False, error="File not found")
+    except PermissionError:
+        return ValidatePathResponse(valid=False, error="Permission denied")
+    except subprocess.TimeoutExpired:
+        return ValidatePathResponse(valid=False, error="Validation timed out after 10s")
+    except OSError as exc:
+        return ValidatePathResponse(valid=False, error=str(exc))
+
+
+_VALIDATORS: dict[str, callable] = {
+    "ida_pro": _validate_ida,
+    "ghidra": _validate_ghidra,
+}
+
+
+@router.post("/validate-path", response_model=ValidatePathResponse)
+async def validate_tool_path(payload: ValidatePathRequest):
+    """Validate a tool installation path by shelling out to the tool binary.
+
+    For IDA Pro, runs the binary in headless mode and checks for a clean
+    exit code. For Ghidra, verifies ``analyzeHeadless`` responds with
+    Ghidra-identifying output.
+
+    Returns ``{valid, error?, version?}``.
+    Unknown ``tool_id`` values return HTTP 400.
+    """
+    if payload.tool_id not in _KNOWN_VALIDATABLE_TOOLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown tool_id '{payload.tool_id}'. Valid: {sorted(_KNOWN_VALIDATABLE_TOOLS)}",
+        )
+
+    validator = _VALIDATORS[payload.tool_id]
+    return await anyio.to_thread.run_sync(validator, payload.path)
 
 
 @router.post("/install")

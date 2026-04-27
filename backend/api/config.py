@@ -35,6 +35,10 @@ class ConfigUpdate(BaseModel):
     ai_api_key: str = Field(default="", description="Raw API key (will be encrypted at rest)")
     ai_model: str = Field(default="gpt-4o", description="Model identifier")
     tool_paths: list[str] = Field(default_factory=list, description="Paths to scan for tools")
+    tool_configs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-tool config paths keyed by tool_id (e.g. {'ida_pro': '/path/to/idat64.exe'})",
+    )
     preferences: dict[str, Any] = Field(default_factory=dict, description="Misc preferences")
 
 
@@ -45,6 +49,7 @@ class ConfigResponse(BaseModel):
     ai_api_key: str = REDACTED
     ai_model: str
     tool_paths: list[str] = Field(default_factory=list)
+    tool_configs: dict[str, str] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
 
 
