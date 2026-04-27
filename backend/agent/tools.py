@@ -318,7 +318,25 @@ async def _exec_extract_pe_info(args: dict[str, Any], engine: PlanningEngine) ->
             f"{sec.get('size_of_raw_data', 0)} | "
             f"{sec.get('characteristics', '?')} |"
         )
-    return "\n".join(lines)
+
+    result_string = "\n".join(lines)
+
+    # Fire-and-forget RAG storage
+    if _rag_store is not None:
+        asyncio.create_task(
+            _rag_store.store(
+                "tool_results",
+                result_string,
+                {
+                    "tool_name": "extract_pe_info",
+                    "path": path,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "role": "tool_result",
+                },
+            )
+        )
+
+    return result_string
 
 
 async def _exec_list_imports_exports(args: dict[str, Any], engine: PlanningEngine) -> str:
@@ -370,7 +388,24 @@ async def _exec_list_imports_exports(args: dict[str, Any], engine: PlanningEngin
     else:
         lines.append("*No exports found.*")
 
-    return "\n".join(lines)
+    result_string = "\n".join(lines)
+
+    # Fire-and-forget RAG storage
+    if _rag_store is not None:
+        asyncio.create_task(
+            _rag_store.store(
+                "tool_results",
+                result_string,
+                {
+                    "tool_name": "list_imports_exports",
+                    "path": path,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "role": "tool_result",
+                },
+            )
+        )
+
+    return result_string
 
 
 async def _exec_extract_strings(args: dict[str, Any], engine: PlanningEngine) -> str:
@@ -421,7 +456,24 @@ async def _exec_extract_strings(args: dict[str, Any], engine: PlanningEngine) ->
         lines.append("")
         lines.append(f"*{total_count - len(display_list)} more strings not shown (use max_results to increase limit).*")
 
-    return "\n".join(lines)
+    result_string = "\n".join(lines)
+
+    # Fire-and-forget RAG storage
+    if _rag_store is not None:
+        asyncio.create_task(
+            _rag_store.store(
+                "tool_results",
+                result_string,
+                {
+                    "tool_name": "extract_strings",
+                    "path": path,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "role": "tool_result",
+                },
+            )
+        )
+
+    return result_string
 
 
 async def _exec_disassemble_function(args: dict[str, Any], engine: PlanningEngine) -> str:
@@ -476,7 +528,24 @@ async def _exec_disassemble_function(args: dict[str, Any], engine: PlanningEngin
         lines.append("")
         lines.append("*Disassembly truncated (more than 500 instructions).*")
 
-    return "\n".join(lines)
+    result_string = "\n".join(lines)
+
+    # Fire-and-forget RAG storage
+    if _rag_store is not None:
+        asyncio.create_task(
+            _rag_store.store(
+                "tool_results",
+                result_string,
+                {
+                    "tool_name": "disassemble_function",
+                    "path": path,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "role": "tool_result",
+                },
+            )
+        )
+
+    return result_string
 
 
 async def _exec_analyze_directory(args: dict[str, Any], engine: PlanningEngine) -> str:
@@ -538,7 +607,24 @@ async def _exec_analyze_directory(args: dict[str, Any], engine: PlanningEngine) 
             logger.exception("analyze_directory error for %s", file_path)
             lines.append(f"| {os.path.basename(file_path)} | — | — | — | — | (error: {exc}) |")
 
-    return "\n".join(lines)
+    result_string = "\n".join(lines)
+
+    # Fire-and-forget RAG storage
+    if _rag_store is not None:
+        asyncio.create_task(
+            _rag_store.store(
+                "tool_results",
+                result_string,
+                {
+                    "tool_name": "analyze_directory",
+                    "path": directory,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "role": "tool_result",
+                },
+            )
+        )
+
+    return result_string
 
 
 # ---------------------------------------------------------------------------
