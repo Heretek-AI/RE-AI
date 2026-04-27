@@ -25,8 +25,6 @@ export function KanbanPage() {
     tasks,
     loading,
     createMilestone,
-    createSlice,
-    createTask,
     updateTaskStatus,
   } = useKanbanData()
 
@@ -41,9 +39,8 @@ export function KanbanPage() {
   }
 
   // ═══ Drag-end handler ═════════════════════════════════════════════════════
-  async function handleDragEnd(
-    event: { operation: { source: { id: string } | null; target: { id: string } | null } },
-  ) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function handleDragEnd(event: { operation: { source: any; target: any } }) {
     const op = event.operation
     const sourceId = op.source?.id
     const targetId = op.target?.id
@@ -68,40 +65,6 @@ export function KanbanPage() {
   function handleCreateMilestone(data: { title: string; description?: string }) {
     createMilestone(data).catch((err) => {
       showError(err instanceof Error ? err.message : 'Failed to create milestone')
-    })
-  }
-
-  function handleCreateSlice(data: {
-    title: string
-    description?: string
-    parentId?: number
-  }) {
-    if (!data.parentId) {
-      showError('A milestone must be selected')
-      return
-    }
-    createSlice(data.parentId, {
-      title: data.title,
-      description: data.description,
-    }).catch((err) => {
-      showError(err instanceof Error ? err.message : 'Failed to create slice')
-    })
-  }
-
-  function handleCreateTask(data: {
-    title: string
-    description?: string
-    parentId?: number
-  }) {
-    if (!data.parentId) {
-      showError('A slice must be selected')
-      return
-    }
-    createTask(data.parentId, {
-      title: data.title,
-      description: data.description,
-    }).catch((err) => {
-      showError(err instanceof Error ? err.message : 'Failed to create task')
     })
   }
 

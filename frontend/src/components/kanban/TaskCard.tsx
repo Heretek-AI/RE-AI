@@ -1,7 +1,6 @@
 'use client'
 
 import { useSortable } from '@dnd-kit/react/sortable'
-import * as React from 'react'
 
 import {
   Badge,
