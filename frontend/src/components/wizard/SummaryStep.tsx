@@ -22,6 +22,7 @@ interface SummaryStepProps {
   provider: string
   model: string
   tools: ToolResult[]
+  toolConfigs?: Record<string, string>
   saving: boolean
   saved: boolean
   error: string | null
@@ -40,6 +41,7 @@ export function SummaryStep({
   provider,
   model,
   tools,
+  toolConfigs = {},
   saving,
   saved,
   error,
@@ -125,6 +127,23 @@ export function SummaryStep({
               )}
             </div>
           </div>
+
+          {/* Tool config paths */}
+          {Object.keys(toolConfigs).length > 0 && (
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Configured Tool Paths</p>
+              <div className="mt-2 space-y-1.5">
+                {Object.entries(toolConfigs).map(([toolId, path]) => (
+                  <div key={toolId} className="flex items-start gap-2 text-xs">
+                    <span className="shrink-0 font-medium capitalize">
+                      {toolId === 'ida_pro' ? 'IDA Pro' : toolId === 'ghidra' ? 'Ghidra' : toolId}:
+                    </span>
+                    <span className="text-muted-foreground break-all">{path}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Key security note */}
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">

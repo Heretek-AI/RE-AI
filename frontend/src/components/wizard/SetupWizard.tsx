@@ -20,6 +20,7 @@ interface WizardData {
   apiKey: string
   model: string
   tools: ToolResult[]
+  toolConfigs: Record<string, string>
 }
 
 interface SetupWizardProps {
@@ -33,6 +34,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     apiKey: '',
     model: '',
     tools: [],
+    toolConfigs: {},
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -43,8 +45,8 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     setStep('tools')
   }, [])
 
-  const handleToolsNext = useCallback((tools: ToolResult[]) => {
-    setData((prev) => ({ ...prev, tools }))
+  const handleToolsNext = useCallback((tools: ToolResult[], toolConfigs: Record<string, string>) => {
+    setData((prev) => ({ ...prev, tools, toolConfigs }))
     setStep('summary')
   }, [])
 
@@ -60,6 +62,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           ai_provider: data.provider,
           ai_api_key: data.apiKey,
           ai_model: data.model,
+          tool_configs: data.toolConfigs,
         }),
       })
 
@@ -105,6 +108,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           provider={data.provider}
           model={data.model}
           tools={data.tools}
+          toolConfigs={data.toolConfigs}
           saving={saving}
           saved={saved}
           error={error}
