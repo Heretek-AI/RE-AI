@@ -44,8 +44,8 @@ class ConfigResponse(BaseModel):
     ai_provider: str
     ai_api_key: str = REDACTED
     ai_model: str
-    tool_paths: list[str]
-    preferences: dict[str, Any]
+    tool_paths: list[str] = Field(default_factory=list)
+    preferences: dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidateRequest(BaseModel):

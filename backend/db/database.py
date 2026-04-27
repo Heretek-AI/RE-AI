@@ -42,7 +42,9 @@ async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
 async def init_db() -> None:
     """Create initial tables if they don't yet exist.
 
-    Called during application startup. Expanded in later slices.
+    Called during application startup. Includes core app tables
+    (conversations, messages, analysis_tasks) and planning engine
+    tables (milestones, slices, tasks).
     """
     conn = await get_connection()
     try:
@@ -67,6 +69,40 @@ async def init_db() -> None:
                 description TEXT NOT NULL,
                 status      TEXT NOT NULL DEFAULT 'pending'
                             CHECK(status IN ('pending','running','complete','failed')),
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            -- Planning engine tables (milestone→slices→tasks hierarchy)
+
+            CREATE TABLE IF NOT EXISTS milestones (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title       TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'active',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS slices (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                milestone_id INTEGER NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'pending',
+                "order"     INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                slice_id    INTEGER NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+                title       TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'pending'
+                            CHECK(status IN ('pending','in_progress','complete','errored')),
+                "order"     INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
