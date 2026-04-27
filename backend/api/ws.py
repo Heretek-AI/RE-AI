@@ -6,9 +6,17 @@ loop updates, status changes).
 """
 
 import json
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+
+def _json_default(obj: Any) -> str:
+    """JSON serializer for objects not natively handled by json.dumps."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 router = APIRouter(tags=["websocket"])
 
@@ -30,7 +38,7 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict[str, Any]) -> None:
         """Send a JSON message to every connected client."""
-        payload = json.dumps(message)
+        payload = json.dumps(message, default=_json_default)
         stale: list[int] = []
         for cid, ws in self._connections.items():
             try:

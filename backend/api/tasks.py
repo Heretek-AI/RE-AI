@@ -10,11 +10,9 @@ Endpoints
 - DELETE /api/tasks/{id}                   — Delete a task (404 if missing)
 """
 
-from collections.abc import AsyncGenerator
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from fastapi import APIRouter, Depends, HTTPException
-
-from backend.db.database import get_connection
+from backend.dependencies import get_planning_engine
 from backend.engine import (
     PlanningEngine,
     TaskCreate,
@@ -29,13 +27,9 @@ router = APIRouter(tags=["tasks"])
 # ── Dependency ──────────────────────────────────────────────────────────────
 
 
-async def get_engine() -> AsyncGenerator[PlanningEngine, None]:
-    """Yield a PlanningEngine with a fresh DB connection per request."""
-    conn = await get_connection()
-    try:
-        yield PlanningEngine(conn=conn)
-    finally:
-        await conn.close()
+async def get_engine(request: Request) -> PlanningEngine:
+    """Return the shared PlanningEngine from app.state."""
+    return get_planning_engine(request)
 
 
 # ── List tasks by slice ─────────────────────────────────────────────────────

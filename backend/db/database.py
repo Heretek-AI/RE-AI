@@ -4,20 +4,32 @@ Uses aiosqlite via SQLAlchemy's async engine. Provides a `get_db`
 dependency that yields async connections for request handlers.
 """
 
+import os
+
 import aiosqlite
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from backend.core.config import settings
 
-# Derive the file path from database_url (strip sqlite+aiosqlite:/// prefix)
-# e.g. "sqlite+aiosqlite:///./re-ai.db" -> "./re-ai.db"
-_db_path = settings.database_url.replace("sqlite+aiosqlite:///", "").lstrip("/")
+
+def _resolve_db_path() -> str:
+    """Resolve the database file path from ``DATABASE_URL`` env var.
+
+    Falls back to ``settings.database_url`` if no env override is set.
+    Uses the env var directly rather than ``settings`` because
+    ``BaseSettings`` is constructed once at module-import time and
+    tests need to change the path at runtime via ``os.environ``.
+    """
+    raw = os.environ.get(
+        "DATABASE_URL",
+        "sqlite+aiosqlite:///./re-ai.db",
+    )
+    return raw.replace("sqlite+aiosqlite:///", "").lstrip("/")
 
 
 async def get_connection() -> aiosqlite.Connection:
     """Create and return a new aiosqlite connection."""
-    conn = await aiosqlite.connect(_db_path)
+    conn = await aiosqlite.connect(_resolve_db_path())
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA foreign_keys=ON")

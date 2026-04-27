@@ -19,9 +19,10 @@ from backend.api.milestones import router as milestones_router
 from backend.api.slices import router as slices_router
 from backend.api.tasks import router as tasks_router
 from backend.api.tools import router as tools_router
-from backend.api.ws import router as ws_router
+from backend.api.ws import manager, router as ws_router
 from backend.core.config import settings
-from backend.db.database import init_db
+from backend.db.database import get_connection, init_db
+from backend.engine import PlanningEngine
 
 
 @asynccontextmanager
@@ -29,8 +30,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
     # --- Startup ---
     await init_db()
+    conn = await get_connection()
+    app.state.engine = PlanningEngine(conn=conn, on_change=manager.broadcast)
     yield
-    # --- Shutdown --- (cleanup if needed)
+    # --- Shutdown ---
+    await conn.close()
 
 
 app = FastAPI(

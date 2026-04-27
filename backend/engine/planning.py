@@ -251,7 +251,10 @@ class PlanningEngine:
             current = await self.get_slice(id)
             if current is None:
                 return None
-            validate_transition(current.status, data.status)
+            if not validate_transition(current.status, data.status):
+                raise ValueError(
+                    f"Invalid status transition: {current.status!r} -> {data.status!r}"
+                )
             sets.append("status = ?")
             params.append(data.status)
         if data.order is not None:
