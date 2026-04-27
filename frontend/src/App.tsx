@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { SetupWizard } from '@/components/wizard/SetupWizard'
+import { ChatPage } from '@/pages/ChatPage'
 import { KanbanPage } from '@/pages/KanbanPage'
 
 function Dashboard() {
@@ -23,7 +24,7 @@ function MainPage() {
 
   return (
     <AppLayout currentPage={page} onNavigate={setPage}>
-      {page === 'tasks' ? <KanbanPage /> : <Dashboard />}
+      {page === 'tasks' ? <KanbanPage /> : page === 'chat' ? <ChatPage /> : <Dashboard />}
     </AppLayout>
   )
 }
