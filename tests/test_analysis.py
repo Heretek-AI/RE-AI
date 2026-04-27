@@ -368,7 +368,7 @@ class TestAnalysisRegistry:
     @staticmethod
     def test_factory_unknown_name_falls_back() -> None:
         """Factory returns NativePythonBackend for unknown name (fallback)."""
-        backend = get_analysis_backend({"analysis_backend": "ida_pro"})
+        backend = get_analysis_backend({"analysis_backend": "unknown_backend"})
         assert isinstance(backend, NativePythonBackend)
 
     @staticmethod
@@ -378,9 +378,196 @@ class TestAnalysisRegistry:
         assert len(backends) >= 1
         names = [b["name"] for b in backends]
         assert "native" in names
+        assert "ida_pro" in names
         for b in backends:
             assert "name" in b
             assert "description" in b
+
+
+# ---------------------------------------------------------------------------
+# T03 — IdaProBackend and factory config-passing
+# ---------------------------------------------------------------------------
+
+
+class TestIdaProBackend:
+    """IdaProBackend instantiation and subprocess-calling methods."""
+
+    @staticmethod
+    def test_can_instantiate() -> None:
+        """IdaProBackend accepts a config dict with tool_configs.ida_pro."""
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend(
+            {"tool_configs": {"ida_pro": "/mock/idat64.exe"}}
+        )
+        assert backend._ida_path == "/mock/idat64.exe"
+
+    @staticmethod
+    def test_missing_config_defaults() -> None:
+        """IdaProBackend({}) works without config — ida_path is None."""
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({})
+        assert backend._ida_path is None
+
+    @pytest.mark.asyncio
+    async def test_analyze_pe_structure_calls_subprocess(self) -> None:
+        """analyze_pe_structure calls _run_headless which invokes subprocess."""
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        fake_output_path = "/tmp/fake.ida_temp.json"
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.return_value = {"machine_type": "AMD64"}
+            result = await backend.analyze_pe_structure("/fake/path.dll")
+
+        mock_run.assert_called_once_with("analyze_pe_structure.py", "/fake/path.dll")
+        assert result == {"machine_type": "AMD64"}
+
+    @pytest.mark.asyncio
+    async def test_get_imports_exports_calls_subprocess(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.return_value = {"imports": [], "exports": []}
+            result = await backend.get_imports_exports("/fake/path.dll")
+
+        mock_run.assert_called_once_with("get_imports_exports.py", "/fake/path.dll")
+        assert result == {"imports": [], "exports": []}
+
+    @pytest.mark.asyncio
+    async def test_extract_strings_passes_min_length(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.return_value = {"strings": [], "total_count": 0, "displayed_count": 0}
+            await backend.extract_strings("/fake/path.dll", min_length=10)
+
+        mock_run.assert_called_once_with(
+            "extract_strings.py",
+            "/fake/path.dll",
+            env_extra={"IDA_MIN_LENGTH": "10"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_disassemble_function_passes_params(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.return_value = {"instructions": []}
+            await backend.disassemble_function(
+                "/fake/path.dll",
+                section_name=".text",
+                offset=0x1000,
+                size=128,
+            )
+
+        mock_run.assert_called_once_with(
+            "disassemble_function.py",
+            "/fake/path.dll",
+            env_extra={
+                "IDA_SECTION_NAME": ".text",
+                "IDA_OFFSET": "4096",
+                "IDA_SIZE": "128",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_file_info_calls_subprocess(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.return_value = {"path": "/fake/path.dll", "size_bytes": 1024}
+            result = await backend.get_file_info("/fake/path.dll")
+
+        mock_run.assert_called_once_with("get_file_info.py", "/fake/path.dll")
+        assert result["size_bytes"] == 1024
+
+    @pytest.mark.asyncio
+    async def test_file_not_found_error(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend, AnalysisError
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.side_effect = AnalysisError("IDA Pro binary not found: /mock/idat64.exe")
+            with pytest.raises(AnalysisError):
+                await backend.analyze_pe_structure("/fake/path.dll")
+
+    @pytest.mark.asyncio
+    async def test_timeout_error(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend, AnalysisError
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.side_effect = AnalysisError(
+                "IDA Pro timeout (300s) for analyze_pe_structure.py on /fake/path.dll"
+            )
+            with pytest.raises(AnalysisError):
+                await backend.analyze_pe_structure("/fake/path.dll")
+
+    @pytest.mark.asyncio
+    async def test_output_file_missing(self) -> None:
+        from unittest.mock import patch
+        from backend.analysis.ida_pro import IdaProBackend, AnalysisError
+
+        backend = IdaProBackend({"tool_configs": {"ida_pro": "/mock/idat64.exe"}})
+
+        with patch.object(backend, "_run_headless") as mock_run:
+            mock_run.side_effect = AnalysisError(
+                "IDA Pro script analyze_pe_structure.py did not produce output"
+            )
+            with pytest.raises(AnalysisError):
+                await backend.analyze_pe_structure("/fake/path.dll")
+
+
+class TestAnalysisRegistryExtended:
+    """Extended registry tests for the factory config-passing change."""
+
+    @staticmethod
+    def test_factory_ida_pro_config() -> None:
+        """Factory with 'ida_pro' backend returns IdaProBackend instance."""
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = get_analysis_backend({
+            "analysis_backend": "ida_pro",
+            "tool_configs": {"ida_pro": "/mock/path"},
+        })
+        assert isinstance(backend, IdaProBackend)
+
+    @staticmethod
+    def test_factory_config_passed_to_backend() -> None:
+        """Config dict reaches the backend constructor."""
+        from backend.analysis.ida_pro import IdaProBackend
+
+        backend = get_analysis_backend({
+            "analysis_backend": "ida_pro",
+            "tool_configs": {"ida_pro": "/mock/path"},
+        })
+        assert isinstance(backend, IdaProBackend)
+        assert backend._ida_path == "/mock/path"
+
+    @staticmethod
+    def test_list_available_backends_contains_ida_pro() -> None:
+        names = [b["name"] for b in list_available_backends()]
+        assert "ida_pro" in names
 
 
 # ---------------------------------------------------------------------------

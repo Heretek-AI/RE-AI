@@ -44,6 +44,10 @@ def get_analysis_backend(config: dict[str, Any]) -> AbstractAnalysisBackend:
     backend.  Unknown backend names fall back to ``NativePythonBackend``
     with a warning logged.
 
+    The full *config* dict is passed to the backend constructor so that
+    backends that need configuration (e.g. ``IdaProBackend`` reading
+    ``tool_configs.ida_pro``) can access it.
+
     Parameters
     ----------
     config:
@@ -59,7 +63,7 @@ def get_analysis_backend(config: dict[str, Any]) -> AbstractAnalysisBackend:
     if cls is None:
         logger.warning("Unknown analysis backend %r, falling back to native", name)
         cls = NativePythonBackend
-    return cls()
+    return cls(config)
 
 
 def list_available_backends() -> list[dict[str, str]]:

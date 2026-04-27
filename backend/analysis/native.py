@@ -151,6 +151,18 @@ class NativePythonBackend(AbstractAnalysisBackend):
     synchronous and fast enough to run in the calling task.
     """
 
+    # ── Constructor ──────────────────────────────────────────────────────
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        """Backward-compatible constructor.
+
+        Accepts an optional *config* dict for API compatibility with
+        ``IdaProBackend`` but ignores it — this backend needs no
+        configuration.
+        """
+        super().__init__()
+        # config is accepted but ignored
+
     # ── PE loading helper ──────────────────────────────────────────────────
 
     @staticmethod
