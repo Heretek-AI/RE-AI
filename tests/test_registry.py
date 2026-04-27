@@ -554,3 +554,303 @@ async def test_execute_tool_falls_through_to_registry(registry, sample_mcp):
     assert isinstance(result, str)
     # Currently returns placeholder until T04
     assert "not yet implemented" in result or result.startswith("ERROR:")
+
+
+# =========================================================================
+# Skill loader
+# =========================================================================
+
+
+def test_load_skills(registry, tmp_path):
+    """load_skills() discovers and parses skill markdown files."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "test_skill.md").write_text(
+        "---\n"
+        "name: test-skill\n"
+        "description: A test skill for unit testing\n"
+        "tool_id: shell\n"
+        "---\n"
+        "\n"
+        "## Test Skill Content\n"
+        "\n"
+        "This is sample skill content."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].name == "test-skill"
+    assert skills[0].description == "A test skill for unit testing"
+    assert skills[0].tool_id == "shell"
+    assert "Test Skill Content" in skills[0].content
+
+
+def test_load_skills_empty_dir(registry):
+    """load_skills() returns empty list when skills dir doesn't exist."""
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir="nonexistent_skills_dir_xyz")
+    assert skills == []
+
+
+def test_load_skills_empty_dir_no_md(registry, tmp_path):
+    """load_skills() returns empty list when skills dir has no .md files."""
+    empty_dir = tmp_path / "empty_skills"
+    empty_dir.mkdir()
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(empty_dir))
+    assert skills == []
+
+
+def test_load_skills_skips_missing_frontmatter(registry, tmp_path):
+    """Skills without required frontmatter are skipped with a warning."""
+    skills_dir = tmp_path / "skills_bad"
+    skills_dir.mkdir()
+    (skills_dir / "bad.md").write_text("# No frontmatter at all\n\nJust content.")
+    (skills_dir / "good.md").write_text(
+        "---\n"
+        "name: good-skill\n"
+        "description: A good one\n"
+        "---\n"
+        "\n"
+        "Good content."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].name == "good-skill"
+
+
+def test_load_skills_skips_missing_name(registry, tmp_path):
+    """Skills with missing 'name' in frontmatter are skipped."""
+    skills_dir = tmp_path / "skills_noname"
+    skills_dir.mkdir()
+    (skills_dir / "noname.md").write_text(
+        "---\n"
+        "description: a skill without a name\n"
+        "---\n"
+        "\n"
+        "Content."
+    )
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert skills == []
+
+
+def test_load_skills_skips_missing_description(registry, tmp_path):
+    """Skills with missing 'description' in frontmatter are skipped."""
+    skills_dir = tmp_path / "skills_nodesc"
+    skills_dir.mkdir()
+    (skills_dir / "nodesc.md").write_text(
+        "---\n"
+        "name: nodesc_skill\n"
+        "---\n"
+        "\n"
+        "Content."
+    )
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert skills == []
+
+
+def test_load_skills_multiple_files(registry, tmp_path):
+    """Multiple skill files are all loaded."""
+    skills_dir = tmp_path / "skills_multi"
+    skills_dir.mkdir()
+    (skills_dir / "a.md").write_text(
+        "---\nname: alpha\ndescription: first skill\n---\n\nAlpha content."
+    )
+    (skills_dir / "b.md").write_text(
+        "---\nname: beta\ndescription: second skill\n---\n\nBeta content."
+    )
+    (skills_dir / "c.md").write_text(
+        "---\nname: gamma\ndescription: third skill\n---\n\nGamma content."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 3
+    names = [s.name for s in skills]
+    assert "alpha" in names
+    assert "beta" in names
+    assert "gamma" in names
+
+
+def test_load_skills_corrupted_file(registry, tmp_path):
+    """Corrupted skill files are skipped gracefully."""
+    skills_dir = tmp_path / "skills_corrupt"
+    skills_dir.mkdir()
+    (skills_dir / "corrupt.md").write_bytes(b"\xff\xfe\x00\x01corrupt data")
+    (skills_dir / "good.md").write_text(
+        "---\nname: good\ndescription: valid skill\n---\n\nValid content."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].name == "good"
+
+
+def test_load_skills_with_none_tool_id(registry, tmp_path):
+    """Skills without tool_id are loaded but don't enrich tools."""
+    skills_dir = tmp_path / "skills_notool"
+    skills_dir.mkdir()
+    (skills_dir / "general.md").write_text(
+        "---\nname: general-tips\ndescription: general best practices\n---\n\nGeneral tips."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].tool_id is None
+
+
+def test_load_skills_command_hint(registry, tmp_path):
+    """Skills with command_hint parse correctly."""
+    skills_dir = tmp_path / "skills_cmdhint"
+    skills_dir.mkdir()
+    (skills_dir / "cmdskill.md").write_text(
+        "---\n"
+        "name: cmdskill\n"
+        "description: A skill with a command hint\n"
+        "tool_id: shell\n"
+        "command_hint: python --version\n"
+        "---\n"
+        "\n"
+        "Skill with command hint."
+    )
+
+    from backend.registry.skill_loader import load_skills
+
+    skills = load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].command_hint == "python --version"
+
+
+# =========================================================================
+# Skill enrichment in ToolRegistry
+# =========================================================================
+
+
+def test_registry_load_skills(registry, tmp_path):
+    """ToolRegistry.load_skills() loads from a custom directory."""
+    skills_dir = tmp_path / "reg_skills"
+    skills_dir.mkdir()
+    (skills_dir / "skill_a.md").write_text(
+        "---\nname: skill-a\ndescription: first skill\ntool_id: shell\n---\n\nSkill A content."
+    )
+
+    skills = registry.load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    assert skills[0].name == "skill-a"
+
+
+def test_registry_load_skills_enriches_tool(registry, tmp_path):
+    """load_skills enriches the matching tool description."""
+    skills_dir = tmp_path / "enrich_skills"
+    skills_dir.mkdir()
+    (skills_dir / "enrich.md").write_text(
+        "---\nname: shell-enrich\ndescription: enriches shell\ntool_id: shell\n---\n\n## Enrichment Content\n\nExtra shell guidance."
+    )
+
+    from backend.agent.tools import TOOLS
+
+    # Capture original description length
+    original_len = len([t for t in TOOLS if t.name == "shell"][0].description)
+
+    registry.load_skills(skills_dir=str(skills_dir))
+
+    shell_tool = [t for t in TOOLS if t.name == "shell"][0]
+    assert len(shell_tool.description) > original_len
+    assert "Enrichment Content" in shell_tool.description
+    assert "Extra shell guidance" in shell_tool.description
+
+
+def test_registry_load_skills_skips_unknown_tool_id(registry, tmp_path):
+    """load_skills skips enrichment for tool_ids that don't match any tool."""
+    skills_dir = tmp_path / "unknown_skills"
+    skills_dir.mkdir()
+    (skills_dir / "unknown.md").write_text(
+        "---\nname: mystery\ndescription: an unknown tool skill\ntool_id: nonexistent_tool_xyz\n---\n\nMystery content."
+    )
+
+    skills = registry.load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+    # No tool was enriched — no error, just log message
+
+
+def test_registry_load_skills_multiple_skills_one_tool(registry, tmp_path):
+    """Multiple skills targeting the same tool all enrich its description."""
+    skills_dir = tmp_path / "multi_skills"
+    skills_dir.mkdir()
+    (skills_dir / "a.md").write_text(
+        "---\nname: shell-1\ndescription: first shell skill\ntool_id: shell\n---\n\nShell part one."
+    )
+    (skills_dir / "b.md").write_text(
+        "---\nname: shell-2\ndescription: second shell skill\ntool_id: shell\n---\n\nShell part two."
+    )
+
+    from backend.agent.tools import TOOLS
+
+    original_len = len([t for t in TOOLS if t.name == "shell"][0].description)
+
+    skills = registry.load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 2
+
+    shell_tool = [t for t in TOOLS if t.name == "shell"][0]
+    assert len(shell_tool.description) > original_len
+    assert "Shell part one" in shell_tool.description
+    assert "Shell part two" in shell_tool.description
+
+
+def test_registry_load_skills_enrichment_only_with_tool_id(registry, tmp_path):
+    """Skills without tool_id don't enrich anything but are still returned."""
+    skills_dir = tmp_path / "notool_skills"
+    skills_dir.mkdir()
+    (skills_dir / "general.md").write_text(
+        "---\nname: general\ndescription: general tips\n---\n\nGeneral content."
+    )
+    (skills_dir / "targeted.md").write_text(
+        "---\nname: targeted\ndescription: targeted tips\ntool_id: shell\n---\n\nTargeted content."
+    )
+
+    from backend.agent.tools import TOOLS
+
+    original_len = len([t for t in TOOLS if t.name == "shell"][0].description)
+
+    skills = registry.load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 2
+
+    shell_tool = [t for t in TOOLS if t.name == "shell"][0]
+    assert len(shell_tool.description) > original_len
+    assert "General content" not in shell_tool.description
+    assert "Targeted content" in shell_tool.description
+
+
+def test_registry_load_skills_empty_skill_content(registry, tmp_path):
+    """Skills with empty content don't modify the tool description."""
+    skills_dir = tmp_path / "empty_content"
+    skills_dir.mkdir()
+    (skills_dir / "empty.md").write_text(
+        "---\nname: empty-skill\ndescription: empty content\ntool_id: shell\n---\n\n  \n\n"
+    )
+
+    from backend.agent.tools import TOOLS
+
+    original_desc = [t for t in TOOLS if t.name == "shell"][0].description
+
+    skills = registry.load_skills(skills_dir=str(skills_dir))
+    assert len(skills) == 1
+
+    shell_tool = [t for t in TOOLS if t.name == "shell"][0]
+    assert shell_tool.description == original_desc

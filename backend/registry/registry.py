@@ -8,6 +8,10 @@ The registry maintains two pools of runtime-discovered tools:
 It also generates a dynamic ``mcp_invoke`` ``ToolDef`` whose description
 reflects the currently registered MCP servers, and a ``shutdown_all()``
 placeholder for MCP lifecycle management.
+
+Skills (loaded from ``skills/*.md``) can enrich existing tool descriptions
+with usage patterns and best practices.  ``load_skills()`` calls the
+``skill_loader`` module and applies enrichments to matching tools.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ import logging
 from typing import Any, Optional
 
 from backend.agent.tools import ToolDef
-from backend.registry.models import CLIToolDef, MCPToolDef
+from backend.registry.models import CLIToolDef, MCPToolDef, SkillDef
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +147,75 @@ class ToolRegistry:
     def list_cli(self) -> list[CLIToolDef]:
         """Return all registered CLI tool definitions."""
         return list(self._cli_tools.values())
+
+    # -------------------------------------------------------------------
+    # Skill enrichment
+    # -------------------------------------------------------------------
+
+    def load_skills(self, skills_dir: str = "skills") -> list[SkillDef]:
+        """Discover, parse, and apply skill enrichments from markdown files.
+
+        Reads ``skills/*.md`` via ``skill_loader.load_skills()``, then
+        enriches any ``ToolDef`` whose name matches a skill's ``tool_id``
+        by appending the skill's content to the tool description.
+
+        Parameters
+        ----------
+        skills_dir:
+            Directory path containing ``*.md`` skill files (default: ``"skills"``).
+
+        Returns
+        -------
+        list[SkillDef]
+            All loaded skill definitions (not just the ones that enriched
+            a tool).
+        """
+        from backend.registry.skill_loader import load_skills as _load_skills
+
+        skills = _load_skills(skills_dir=skills_dir)
+        self._enrich_tools_with_skills(skills)
+        return skills
+
+    def _enrich_tools_with_skills(self, skills: list[SkillDef]) -> None:
+        """Enrich static ``ToolDef`` descriptions with skill content.
+
+        For each skill that has a ``tool_id`` matching a static tool name,
+        append the skill's markdown content (prefixed with a heading) to
+        the tool's description.
+        """
+        # Build a lookup of static tools by name
+        static_tools: dict[str, ToolDef] = {}
+        try:
+            from backend.agent.tools import TOOLS as _STATIC_TOOLS
+
+            for t in _STATIC_TOOLS:
+                static_tools[t.name] = t
+        except Exception:
+            logger.debug("Cannot import static TOOLS for skill enrichment")
+            return
+
+        for skill in skills:
+            if not skill.tool_id:
+                continue
+            target = static_tools.get(skill.tool_id)
+            if target is None:
+                logger.debug(
+                    "Skill '%s' references unknown tool_id '%s' — skipping enrichment.",
+                    skill.name,
+                    skill.tool_id,
+                )
+                continue
+            if not skill.content.strip():
+                continue
+
+            enrichment = f"\n\n---\n\n**Skill: {skill.name}**\n\n{skill.content.strip()}"
+            target.description += enrichment
+            logger.debug(
+                "Enriched tool '%s' with skill '%s' (%d chars added)",
+                target.name,
+                skill.name,
+                len(enrichment),
+            )
 
     # -------------------------------------------------------------------
     # ToolDef generation
