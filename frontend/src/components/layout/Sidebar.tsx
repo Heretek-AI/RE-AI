@@ -4,16 +4,18 @@ interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
   connectionIndicator: React.ReactNode
+  currentPage: string
+  onNavigate: (page: string) => void
 }
 
 const navItems = [
-  { label: 'Dashboard', icon: 'LayoutDashboard', href: '#' },
-  { label: 'Tasks', icon: 'ListChecks', href: '#' },
-  { label: 'Chat', icon: 'MessageSquare', href: '#' },
-  { label: 'Settings', icon: 'Settings', href: '#' },
+  { label: 'Dashboard', icon: 'LayoutDashboard', page: 'dashboard' },
+  { label: 'Tasks', icon: 'ListChecks', page: 'tasks' },
+  { label: 'Chat', icon: 'MessageSquare', page: 'chat' },
+  { label: 'Settings', icon: 'Settings', page: 'settings' },
 ]
 
-export function Sidebar({ collapsed, onToggle, connectionIndicator }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, connectionIndicator, currentPage, onNavigate }: SidebarProps) {
   return (
     <aside
       className={cn(
@@ -54,17 +56,17 @@ export function Sidebar({ collapsed, onToggle, connectionIndicator }: SidebarPro
       {/* Navigation */}
       <nav className="flex-1 space-y-1 px-2 py-4">
         {navItems.map((item) => (
-          <a
+          <button
             key={item.label}
-            href={item.href}
+            onClick={() => onNavigate(item.page)}
             className={cn(
-              'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-              item.label === 'Dashboard' && 'bg-sidebar-accent text-sidebar-accent-foreground font-medium',
+              'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+              currentPage === item.page && 'bg-sidebar-accent text-sidebar-accent-foreground font-medium',
             )}
           >
             <NavIcon name={item.icon} />
             {!collapsed && <span>{item.label}</span>}
-          </a>
+          </button>
         ))}
       </nav>
 

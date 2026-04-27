@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { SetupWizard } from '@/components/wizard/SetupWizard'
+import { KanbanPage } from '@/pages/KanbanPage'
 
 function Dashboard() {
   return (
@@ -14,6 +15,16 @@ function Dashboard() {
         </p>
       </div>
     </div>
+  )
+}
+
+function MainPage() {
+  const [page, setPage] = useState('dashboard')
+
+  return (
+    <AppLayout currentPage={page} onNavigate={setPage}>
+      {page === 'tasks' ? <KanbanPage /> : <Dashboard />}
+    </AppLayout>
   )
 }
 
@@ -63,11 +74,7 @@ function App() {
     return <SetupWizard onComplete={handleComplete} />
   }
 
-  return (
-    <AppLayout>
-      <Dashboard />
-    </AppLayout>
-  )
+  return <MainPage />
 }
 
 export default App

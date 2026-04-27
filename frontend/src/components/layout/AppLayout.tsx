@@ -6,9 +6,11 @@ import { useWebSocket, type WebSocketStatus } from '@/hooks/useWebSocket'
 
 interface AppLayoutProps {
   children: React.ReactNode
+  currentPage?: string
+  onNavigate?: (page: string) => void
 }
 
-export function AppLayout({ children }: AppLayoutProps) {
+export function AppLayout({ children, currentPage, onNavigate }: AppLayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { status } = useWebSocket()
 
@@ -18,6 +20,8 @@ export function AppLayout({ children }: AppLayoutProps) {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed((prev) => !prev)}
         connectionIndicator={<ConnectionIndicator status={status as WebSocketStatus} />}
+        currentPage={currentPage ?? 'dashboard'}
+        onNavigate={onNavigate ?? (() => {})}
       />
       <main className="flex-1 overflow-auto bg-background">
         {children}
