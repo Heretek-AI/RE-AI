@@ -127,7 +127,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
         return
 
     # --- Create agent session ---
-    session = AgentLoopSession(provider=provider, engine=engine)
+    vector_store = getattr(app.state, "vector_store", None)
+    session = AgentLoopSession(
+        provider=provider,
+        engine=engine,
+        vector_store=vector_store,
+    )
 
     # --- Message processing loop ---
     current_task: Optional[asyncio.Task[None]] = None

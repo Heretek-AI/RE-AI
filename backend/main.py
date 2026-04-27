@@ -4,10 +4,13 @@ Initializes the server with CORS, routers, static file serving,
 and startup/shutdown lifecycle hooks.
 """
 
+import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +28,7 @@ from backend.api.ws import manager, router as ws_router
 from backend.core.config import settings
 from backend.db.database import get_connection, init_db
 from backend.engine import PlanningEngine
+from backend.rag import init_vector_store
 from backend.registry import ToolRegistry
 
 
@@ -35,6 +39,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     conn = await get_connection()
     app.state.engine = PlanningEngine(conn=conn, on_change=manager.broadcast)
+
+    # Initialize vector store for RAG
+    app.state.vector_store = init_vector_store({
+        "vector_db_type": settings.vector_db_type,
+        "chroma_persist_dir": settings.chroma_persist_dir,
+    })
+    logger.info(
+        "Vector store initialization complete (type=%s)",
+        settings.vector_db_type,
+    )
+
     yield
     # --- Shutdown ---
     # Shut down all MCP server subprocesses

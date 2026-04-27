@@ -114,6 +114,37 @@ def get_vector_store(config: dict[str, Any]) -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Convenience: init_vector_store (startup logging)
+# ---------------------------------------------------------------------------
+
+
+def init_vector_store(config: dict[str, Any]) -> Optional[Any]:
+    """Initialize a vector store from *config* and log startup status.
+
+    Returns the store instance (or ``None`` on failure) and emits an
+    info-level log line so the operator can confirm which backend is
+    active at startup.
+
+    Logs
+    ----
+    - "Vector store initialized: chroma (persist_dir=...)" on success
+    - "Vector store not available ..." on graceful degradation
+    """
+    store = get_vector_store(config)
+    if store is not None:
+        db_type = config.get("vector_db_type", "chroma")
+        persist_dir = config.get("chroma_persist_dir", "./.chroma")
+        logger.info(
+            "Vector store initialized: %s (persist_dir=%s)",
+            db_type,
+            persist_dir,
+        )
+    else:
+        logger.warning("Vector store not available — RAG features disabled.")
+    return store
+
+
+# ---------------------------------------------------------------------------
 # Convenience: module-level global
 # ---------------------------------------------------------------------------
 

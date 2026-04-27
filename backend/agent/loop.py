@@ -15,8 +15,10 @@ Event types yielded by ``process_message``:
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any, Optional
 
 from backend.agent.provider import BaseProvider
@@ -102,6 +104,10 @@ class AgentLoopSession:
         The shared planning engine for kanban CRUD access.
     system_prompt:
         Optional override for the default system prompt.
+    vector_store:
+        Optional ``BaseVectorStore`` instance. When set, tool results,
+        user messages, and assistant responses are automatically stored
+        in the vector database for future RAG retrieval.
     """
 
     def __init__(
@@ -109,12 +115,14 @@ class AgentLoopSession:
         provider: BaseProvider,
         engine: PlanningEngine,
         system_prompt: Optional[str] = None,
+        vector_store: Optional[Any] = None,
     ) -> None:
         self._provider = provider
         self._engine = engine
         self._system_prompt = system_prompt if system_prompt is not None else _build_system_prompt()
         self._messages: list[dict[str, Any]] = []
         self._tool_schemas = get_tool_schemas()
+        self._vector_store = vector_store
 
     # -- Public API ------------------------------------------------------------
 
@@ -142,6 +150,19 @@ class AgentLoopSession:
             ``{"type": "agent:done"}``.
         """
         self._messages.append({"role": "user", "content": user_message})
+
+        # Fire-and-forget: store user message in vector DB for future retrieval
+        if self._vector_store is not None:
+            asyncio.create_task(
+                self._vector_store.store(
+                    "conversation",
+                    user_message,
+                    {
+                        "role": "user",
+                        "timestamp": datetime.utcnow().isoformat(),
+                    },
+                )
+            )
 
         tool_call_count = 0
         stream_exhausted = False
@@ -228,15 +249,53 @@ class AgentLoopSession:
                             "result": result,
                         }
 
+                        # Fire-and-forget: store tool result in vector DB
+                        if self._vector_store is not None:
+                            asyncio.create_task(
+                                self._vector_store.store(
+                                    "tool_results",
+                                    result,
+                                    {
+                                        "tool_name": tool_name,
+                                        "tool_args": json.dumps(tool_args),
+                                        "timestamp": datetime.utcnow().isoformat(),
+                                        "role": "tool_result",
+                                    },
+                                )
+                            )
+
                     tool_call_count += len(pending_tool_calls)
                     continue  # Another cycle — LLM sees tool results
 
                 # Stream exhausted with no tool calls and no errors — final answer
                 if stream_exhausted:
+                    # Fire-and-forget: store assistant response in vector DB
+                    if self._vector_store is not None and full_response:
+                        asyncio.create_task(
+                            self._vector_store.store(
+                                "conversation",
+                                full_response,
+                                {
+                                    "role": "assistant",
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                },
+                            )
+                        )
                     yield {"type": "agent:done"}
                     return
 
                 # Fallback: should not normally reach here
+                if self._vector_store is not None and full_response:
+                    asyncio.create_task(
+                        self._vector_store.store(
+                            "conversation",
+                            full_response,
+                            {
+                                "role": "assistant",
+                                "timestamp": datetime.utcnow().isoformat(),
+                            },
+                        )
+                    )
                 yield {"type": "agent:done"}
                 return
 
