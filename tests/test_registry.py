@@ -1201,3 +1201,178 @@ async def test_mcp_process_concurrent_safety(echo_def):
     assert proc.status == "running"
 
     await proc.shutdown()
+
+
+# =========================================================================
+# End-to-end: register via REST → visible in schemas → unregister
+# =========================================================================
+
+
+class TestRegistryEndToEnd:
+    """End-to-end verification: register tools, verify in get_tool_schemas(), unregister."""
+
+    @pytest.fixture
+    def registry(self):
+        ToolRegistry.reset_instance()
+        r = ToolRegistry.get_instance()
+        yield r
+        ToolRegistry.reset_instance()
+
+    def test_register_mcp_then_visible_in_schemas(self, registry):
+        """Registering an MCP tool makes it appear in get_tool_schemas()."""
+        from backend.agent.tools import get_tool_schemas
+
+        # Before: mcp_invoke shows no servers
+        schemas_before = get_tool_schemas()
+        mcp_before = next(s for s in schemas_before if s["function"]["name"] == "mcp_invoke")
+        assert "(no servers registered)" in mcp_before["function"]["description"]
+
+        # Register
+        registry.register_mcp(MCPToolDef(
+            name="test_server",
+            description="A test MCP server.",
+            command="python",
+            args=["server.py"],
+        ))
+
+        # After: mcp_invoke shows the server
+        schemas_after = get_tool_schemas()
+        mcp_after = next(s for s in schemas_after if s["function"]["name"] == "mcp_invoke")
+        assert "test_server" in mcp_after["function"]["description"]
+        assert "A test MCP server" in mcp_after["function"]["description"]
+        assert "(no servers registered)" not in mcp_after["function"]["description"]
+
+    def test_register_cli_then_visible_in_prompt(self, registry):
+        """Registering a CLI tool makes it appear in _build_system_prompt()."""
+        from backend.agent.loop import _build_system_prompt
+
+        # Before: no CLI tools
+        prompt_before = _build_system_prompt()
+        assert "my_cli_tool" not in prompt_before
+
+        # Register
+        registry.register_cli(CLIToolDef(
+            name="my_cli_tool",
+            description="A test CLI tool.",
+            command_hint="my_cli_tool --help",
+            shell="bash",
+        ))
+
+        # After: CLI tool appears
+        prompt_after = _build_system_prompt()
+        assert "my_cli_tool" in prompt_after
+        assert "A test CLI tool" in prompt_after
+        assert "[bash]" in prompt_after
+
+    def test_register_unregister_mcp_schemas_update(self, registry):
+        """Unregistering an MCP tool removes it from get_tool_schemas()."""
+        from backend.agent.tools import get_tool_schemas
+
+        registry.register_mcp(MCPToolDef(
+            name="temp_server", description="Temporary.", command="node",
+        ))
+
+        schemas = get_tool_schemas()
+        mcp = next(s for s in schemas if s["function"]["name"] == "mcp_invoke")
+        assert "temp_server" in mcp["function"]["description"]
+
+        registry.unregister_mcp("temp_server")
+
+        schemas = get_tool_schemas()
+        mcp = next(s for s in schemas if s["function"]["name"] == "mcp_invoke")
+        assert "temp_server" not in mcp["function"]["description"]
+        assert "(no servers registered)" in mcp["function"]["description"]
+
+    def test_register_unregister_cli_prompt_updates(self, registry):
+        """Unregistering a CLI tool removes it from _build_system_prompt()."""
+        from backend.agent.loop import _build_system_prompt
+
+        registry.register_cli(CLIToolDef(
+            name="temp_cli", description="Temporary CLI.", command_hint="temp_cli",
+        ))
+        assert "temp_cli" in _build_system_prompt()
+
+        registry.unregister_cli("temp_cli")
+        assert "temp_cli" not in _build_system_prompt()
+
+    def test_register_mcp_shows_in_get_mcp_status(self, registry):
+        """get_mcp_status reflects registered MCP tools."""
+        status_before = registry.get_mcp_status()
+        assert status_before == []
+
+        registry.register_mcp(MCPToolDef(
+            name="server_x", description="Server X.", command="python",
+        ))
+
+        status = registry.get_mcp_status()
+        assert len(status) == 1
+        assert status[0]["name"] == "server_x"
+        assert status[0]["process_status"] == "stopped"
+        assert status[0]["registered"] is True
+
+        registry.unregister_mcp("server_x")
+        assert registry.get_mcp_status() == []
+
+    def test_get_cli_descriptions_includes_registered(self, registry):
+        """get_cli_descriptions reflects registered CLI tools."""
+        assert registry.get_cli_descriptions() == ""
+
+        registry.register_cli(CLIToolDef(
+            name="cli1", description="CLI one.", command_hint="cli1 --help",
+        ))
+        desc = registry.get_cli_descriptions()
+        assert "cli1" in desc
+        assert "CLI one." in desc
+
+        registry.unregister_cli("cli1")
+        assert registry.get_cli_descriptions() == ""
+
+    def test_tool_defs_rebuild_on_register(self, registry):
+        """get_tool_defs() is rebuilt on every register/unregister."""
+        defs_before = registry.get_tool_defs()
+        assert "(no servers registered)" in defs_before[0].description
+
+        registry.register_mcp(MCPToolDef(
+            name="alpha", description="Alpha server.", command="python",
+        ))
+        defs_after = registry.get_tool_defs()
+        assert "alpha" in defs_after[0].description
+
+        registry.register_mcp(MCPToolDef(
+            name="beta", description="Beta server.", command="python",
+        ))
+        defs_after2 = registry.get_tool_defs()
+        assert "alpha" in defs_after2[0].description
+        assert "beta" in defs_after2[0].description
+
+        registry.unregister_mcp("alpha")
+        defs_after3 = registry.get_tool_defs()
+        assert "alpha" not in defs_after3[0].description
+        assert "beta" in defs_after3[0].description
+
+    def test_register_mcp_unregister_in_schemas_cycle(self, registry):
+        """Cycle: register → visible → unregister → gone → re-register → visible again."""
+        from backend.agent.tools import get_tool_schemas
+
+        assert "(no servers registered)" in _mcp_desc(get_tool_schemas())
+
+        registry.register_mcp(MCPToolDef(
+            name="cycle_test", description="Cycle test.", command="npx",
+        ))
+        assert "cycle_test" in _mcp_desc(get_tool_schemas())
+
+        registry.unregister_mcp("cycle_test")
+        assert "(no servers registered)" in _mcp_desc(get_tool_schemas())
+
+        registry.register_mcp(MCPToolDef(
+            name="cycle_test", description="Cycle test again.", command="npx",
+        ))
+        assert "cycle_test" in _mcp_desc(get_tool_schemas())
+
+        registry.unregister_mcp("cycle_test")
+        assert "(no servers registered)" in _mcp_desc(get_tool_schemas())
+
+
+def _mcp_desc(schemas):
+    """Helper: return the description of the mcp_invoke schema."""
+    return next(s for s in schemas if s["function"]["name"] == "mcp_invoke")["function"]["description"]

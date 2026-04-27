@@ -17,6 +17,7 @@ from backend.api.chat_ws import router as chat_ws_router
 from backend.api.config import router as config_router
 from backend.api.health import router as health_router
 from backend.api.milestones import router as milestones_router
+from backend.api.registry import router as registry_router
 from backend.api.slices import router as slices_router
 from backend.api.tasks import router as tasks_router
 from backend.api.tools import router as tools_router
@@ -24,6 +25,7 @@ from backend.api.ws import manager, router as ws_router
 from backend.core.config import settings
 from backend.db.database import get_connection, init_db
 from backend.engine import PlanningEngine
+from backend.registry import ToolRegistry
 
 
 @asynccontextmanager
@@ -35,6 +37,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.engine = PlanningEngine(conn=conn, on_change=manager.broadcast)
     yield
     # --- Shutdown ---
+    # Shut down all MCP server subprocesses
+    await ToolRegistry.get_instance().shutdown_all()
     await conn.close()
 
 
@@ -57,6 +61,7 @@ app.add_middleware(
 app.include_router(config_router)
 app.include_router(health_router)
 app.include_router(milestones_router)
+app.include_router(registry_router)
 app.include_router(slices_router)
 app.include_router(tasks_router)
 app.include_router(tools_router)

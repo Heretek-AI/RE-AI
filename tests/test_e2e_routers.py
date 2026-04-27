@@ -42,6 +42,15 @@ async def clean_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def reset_registry():
+    """Reset the ToolRegistry singleton before each test."""
+    from backend.registry import ToolRegistry
+    ToolRegistry.reset_instance()
+    yield
+    ToolRegistry.reset_instance()
+
+
 @pytest.fixture
 async def client():
     """Provide an httpx AsyncClient with the shared engine installed.
@@ -411,3 +420,199 @@ class TestWebSocketBroadcast:
         resp = await client.post("/api/milestones", json={"title": "M1"})
         assert resp.status_code == 201
         assert resp.json()["title"] == "M1"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Registry API
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestRegistryAPI:
+    """Tests for the tool registry REST API.
+
+    These endpoints are stateless (no db) so they work with the default
+    client fixture.  The registry singleton is reset per test via the
+    ``reset_registry`` autouse fixture.
+    """
+
+    async def test_registry_list_tools_empty(self, client: httpx.AsyncClient):
+        """GET /api/registry/tools returns empty list when nothing is registered."""
+        resp = await client.get("/api/registry/tools")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["tools"] == []
+
+    async def test_registry_register_mcp_tool_201(self, client: httpx.AsyncClient):
+        """POST /api/registry/tools/register with MCP tool returns 201."""
+        resp = await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp",
+            "name": "file_system",
+            "description": "Read and write files via MCP.",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+            "env_vars": {"TOKEN": "secret123"},
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["message"] == "Tool 'file_system' registered successfully."
+        tool = data["tool"]
+        assert tool["name"] == "file_system"
+        assert tool["type"] == "mcp"
+        assert tool["command"] == "npx"
+        assert tool["args"] == ["-y", "@modelcontextprotocol/server-filesystem", "."]
+        assert tool["env_var_names"] == ["TOKEN"]
+        assert tool["process_status"] == "stopped"
+        # Values must NOT be leaked
+        assert "secret123" not in str(data)
+
+    async def test_registry_register_cli_tool_201(self, client: httpx.AsyncClient):
+        """POST /api/registry/tools/register with CLI tool returns 201."""
+        resp = await client.post("/api/registry/tools/register", json={
+            "tool_type": "cli",
+            "name": "ida",
+            "description": "Interactive disassembler.",
+            "command_hint": "idat64.exe -A target.exe",
+            "shell": "cmd",
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["message"] == "Tool 'ida' registered successfully."
+        tool = data["tool"]
+        assert tool["name"] == "ida"
+        assert tool["type"] == "cli"
+        assert tool["command_hint"] == "idat64.exe -A target.exe"
+        assert tool["shell"] == "cmd"
+        assert tool["process_status"] == "available"
+
+    async def test_registry_register_mcp_missing_command_400(self, client: httpx.AsyncClient):
+        """POST with MCP type but no command returns 400."""
+        resp = await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp",
+            "name": "bad_tool",
+            "description": "Missing command.",
+        })
+        assert resp.status_code == 400
+        assert "command" in resp.json()["detail"].lower()
+
+    async def test_registry_list_tools_after_register(self, client: httpx.AsyncClient):
+        """GET /api/registry/tools shows registered tools."""
+        await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp",
+            "name": "fs",
+            "description": "File system server.",
+            "command": "npx",
+        })
+        await client.post("/api/registry/tools/register", json={
+            "tool_type": "cli",
+            "name": "ghidra",
+            "description": "RE framework.",
+            "command_hint": "ghidraRun",
+        })
+
+        resp = await client.get("/api/registry/tools")
+        assert resp.status_code == 200
+        data = resp.json()
+        names = {t["name"] for t in data["tools"]}
+        assert names == {"fs", "ghidra"}
+
+        # Verify MCP tool has process_status
+        mcp_tool = next(t for t in data["tools"] if t["type"] == "mcp")
+        assert mcp_tool["process_status"] == "stopped"
+
+        # Verify CLI tool has status
+        cli_tool = next(t for t in data["tools"] if t["type"] == "cli")
+        assert cli_tool["process_status"] == "available"
+
+    async def test_registry_unregister_tool_200(self, client: httpx.AsyncClient):
+        """DELETE /api/registry/tools/{tool_id} removes a registered tool."""
+        await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp",
+            "name": "fs",
+            "description": "File system server.",
+            "command": "npx",
+        })
+
+        resp = await client.delete("/api/registry/tools/fs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "unregistered" in data["message"].lower()
+
+        # Verify it's gone
+        resp = await client.get("/api/registry/tools")
+        assert resp.json()["tools"] == []
+
+    async def test_registry_unregister_tool_404(self, client: httpx.AsyncClient):
+        """DELETE /api/registry/tools/{tool_id} returns 404 for unknown tool."""
+        resp = await client.delete("/api/registry/tools/nonexistent")
+        assert resp.status_code == 404
+
+    async def test_registry_register_cli_minimal(self, client: httpx.AsyncClient):
+        """CLI tool can be registered with only required fields."""
+        resp = await client.post("/api/registry/tools/register", json={
+            "tool_type": "cli",
+            "name": "simple_tool",
+            "description": "A simple tool.",
+            "command_hint": "simple_tool --help",
+        })
+        assert resp.status_code == 201
+        tool = resp.json()["tool"]
+        assert tool["name"] == "simple_tool"
+        assert tool["type"] == "cli"
+        assert tool["command_hint"] == "simple_tool --help"
+        assert tool["shell"] is None
+
+    async def test_registry_unregister_mcp_tool_via_api(self, client: httpx.AsyncClient):
+        """Unregister MCP tool and verify it disappears from the registry."""
+        from backend.registry import ToolRegistry
+
+        # Register via API
+        await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp",
+            "name": "github",
+            "description": "GitHub API server.",
+            "command": "node",
+            "args": ["server.js"],
+        })
+
+        # Check registry state
+        assert ToolRegistry.get_instance().get_mcp("github") is not None
+
+        # Unregister via API
+        resp = await client.delete("/api/registry/tools/github")
+        assert resp.status_code == 200
+
+        # Verify registry state
+        assert ToolRegistry.get_instance().get_mcp("github") is None
+
+    async def test_registry_full_register_list_unregister_lifecycle(self, client: httpx.AsyncClient):
+        """Full lifecycle: register -> list includes it -> unregister -> empty."""
+        # Register
+        r1 = await client.post("/api/registry/tools/register", json={
+            "tool_type": "mcp", "name": "sv1", "description": "Server 1.", "command": "python",
+        })
+        assert r1.status_code == 201
+        r2 = await client.post("/api/registry/tools/register", json={
+            "tool_type": "cli", "name": "ct1", "description": "CLI tool 1.", "command_hint": "ct1",
+        })
+        assert r2.status_code == 201
+
+        # List includes both
+        resp = await client.get("/api/registry/tools")
+        assert len(resp.json()["tools"]) == 2
+
+        # Unregister MCP
+        resp = await client.delete("/api/registry/tools/sv1")
+        assert resp.status_code == 200
+
+        # List has only the CLI tool
+        resp = await client.get("/api/registry/tools")
+        assert len(resp.json()["tools"]) == 1
+        assert resp.json()["tools"][0]["name"] == "ct1"
+
+        # Unregister CLI
+        resp = await client.delete("/api/registry/tools/ct1")
+        assert resp.status_code == 200
+
+        # Empty
+        resp = await client.get("/api/registry/tools")
+        assert resp.json()["tools"] == []
+
