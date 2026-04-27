@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api.config import router as config_router
 from backend.api.health import router as health_router
+from backend.api.tools import router as tools_router
 from backend.api.ws import router as ws_router
 from backend.core.config import settings
 from backend.db.database import init_db
@@ -47,6 +48,7 @@ app.add_middleware(
 # --- Routers ---
 app.include_router(config_router)
 app.include_router(health_router)
+app.include_router(tools_router)
 app.include_router(ws_router)
 
 # --- Static files (if directory exists) ---
