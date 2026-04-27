@@ -50,7 +50,17 @@ app.include_router(ws_router)
 # --- Static files (if directory exists) ---
 static_dir = Path(__file__).resolve().parent / "static"
 if static_dir.is_dir():
+    # Serve explicit /static/* paths for raw assets (favicon, icons, etc.)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # Serve the SPA from root if index.html exists — html=True means
+    # unrecognized paths fall through to index.html (SPA client-side routing)
+    if (static_dir / "index.html").exists():
+        app.mount(
+            "/",
+            StaticFiles(directory=str(static_dir), html=True),
+            name="spa",
+        )
 
 
 # --- Convenience entry point ---
