@@ -307,10 +307,22 @@ TOOLS: list[ToolDef] = [
 def get_tool_schemas() -> list[dict[str, Any]]:
     """Return OpenAI-compatible tool definitions for all registered tools.
 
+    Combines static tool definitions (shell, kanban CRUD) with dynamic
+    registry tool definitions (``mcp_invoke``, skills, etc.).
     Each dict follows the ``tools`` parameter format for
     ``chat.completions.create``.
     """
-    return [t.to_openai_schema() for t in TOOLS]
+    schemas = [t.to_openai_schema() for t in TOOLS]
+    # Append registry-provided ToolDef schemas (mcp_invoke, skills, etc.)
+    try:
+        from backend.registry.registry import ToolRegistry  # lazy: avoid circular import
+
+        registry = ToolRegistry.get_instance()
+        for tool_def in registry.get_tool_defs():
+            schemas.append(tool_def.to_openai_schema())
+    except Exception:
+        logger.debug("ToolRegistry not available, skipping registry schemas")
+    return schemas
 
 
 async def execute_tool_call(
@@ -345,4 +357,13 @@ async def execute_tool_call(
             except Exception as exc:
                 logger.exception("Tool '%s' raised an exception", name)
                 return f"ERROR: {name} failed: {exc}"
-    return f"ERROR: Unknown tool '{name}'."
+
+    # Fall through to registry for dynamically registered tools (mcp_invoke, etc.)
+    try:
+        from backend.registry.registry import ToolRegistry  # lazy: avoid circular import
+
+        registry = ToolRegistry.get_instance()
+        return await registry.exec_registered_tool(name, args, engine)
+    except Exception as exc:
+        logger.exception("Registry dispatch failed for '%s'", name)
+        return f"ERROR: Unknown tool '{name}'."

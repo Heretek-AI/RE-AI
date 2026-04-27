@@ -2,7 +2,7 @@
 
 Covers CRUD operations on MCPToolDef and CLIToolDef, ToolDef generation
 (mcp_invoke schema, descriptions), execution dispatch placeholders, and
-singleton lifecycle.
+integration with the agent tool pipeline.
 """
 
 import pytest
@@ -444,3 +444,113 @@ def test_register_describe_unregister(registry, sample_mcp, sample_cli):
     assert registry.list_cli() == []
     assert "(no servers registered)" in registry.get_tool_defs()[0].description
     assert registry.get_cli_descriptions() == ""
+
+
+# =========================================================================
+# Integration: registry tools appear in agent tool pipeline
+# =========================================================================
+
+
+def test_schemas_include_mcp_invoke(registry, sample_mcp):
+    """get_tool_schemas() includes the mcp_invoke schema from the registry."""
+    from backend.agent.tools import get_tool_schemas
+
+    # Before registering any MCP servers
+    schemas = get_tool_schemas()
+    names = [s["function"]["name"] for s in schemas]
+    assert "mcp_invoke" in names, "mcp_invoke should appear in schemas"
+
+    # Verify it has the expected shape
+    mcp_schema = next(s for s in schemas if s["function"]["name"] == "mcp_invoke")
+    params = mcp_schema["function"]["parameters"]
+    assert "server" in params["properties"]
+    assert "tool" in params["properties"]
+    assert params["required"] == ["server", "tool"]
+
+
+def test_schemas_mcp_description_updates_with_registry(registry, sample_mcp):
+    """mcp_invoke description in schemas updates when MCP servers are registered."""
+    from backend.agent.tools import get_tool_schemas
+
+    registry.register_mcp(sample_mcp)
+
+    schemas = get_tool_schemas()
+    mcp_schema = next(s for s in schemas if s["function"]["name"] == "mcp_invoke")
+    desc = mcp_schema["function"]["description"]
+    assert "file_system" in desc
+    assert "Read and write files" in desc
+
+
+def test_schemas_multiple_registry_servers(registry, sample_mcp, sample_mcp_2):
+    """Multiple registered MCP servers all appear in the mcp_invoke description."""
+    from backend.agent.tools import get_tool_schemas
+
+    registry.register_mcp(sample_mcp)
+    registry.register_mcp(sample_mcp_2)
+
+    schemas = get_tool_schemas()
+    mcp_schema = next(s for s in schemas if s["function"]["name"] == "mcp_invoke")
+    desc = mcp_schema["function"]["description"]
+    assert "file_system" in desc
+    assert "github" in desc
+
+
+def test_schemas_static_tools_still_present(registry):
+    """Static tools (shell, kanban) still appear alongside registry tools."""
+    from backend.agent.tools import get_tool_schemas
+
+    schemas = get_tool_schemas()
+    names = [s["function"]["name"] for s in schemas]
+    assert "shell" in names
+    assert "create_task" in names
+    assert "update_task_status" in names
+    assert "get_task_status" in names
+    assert "get_slice_tasks" in names
+    assert "mcp_invoke" in names
+
+
+def test_prompt_includes_cli_descriptions(registry, sample_cli):
+    """_build_system_prompt() includes CLI descriptions from the registry."""
+    from backend.agent.loop import _build_system_prompt
+
+    registry.register_cli(sample_cli)
+    prompt = _build_system_prompt()
+    assert "ida" in prompt
+    assert "Interactive disassembler" in prompt
+    assert "idat64.exe" in prompt
+    assert "[cmd]" in prompt
+
+
+def test_prompt_multiple_cli_tools(registry, sample_cli, sample_cli_2):
+    """Multiple CLI tools all appear in the prompt."""
+    from backend.agent.loop import _build_system_prompt
+
+    registry.register_cli(sample_cli)
+    registry.register_cli(sample_cli_2)
+    prompt = _build_system_prompt()
+    assert "ida" in prompt
+    assert "ghidra" in prompt
+    assert "Available CLI tools:" in prompt
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_falls_through_to_registry(registry, sample_mcp):
+    """execute_tool_call() dispatches mcp_invoke through the registry."""
+    from backend.agent.tools import execute_tool_call
+
+    registry.register_mcp(sample_mcp)
+
+    # Use a lightweight mock engine — PlanningEngine requires aiosqlite,
+    # so we provide a minimal object with the attributes the tool path touches.
+    class _MockEngine:
+        pass
+
+    engine = _MockEngine()
+    result = await execute_tool_call(
+        "mcp_invoke",
+        {"server": "file_system", "tool": "read_file", "arguments": {}},
+        engine,
+    )
+    assert isinstance(result, str)
+    # Currently returns placeholder until T04
+    assert "not yet implemented" in result or result.startswith("ERROR:")

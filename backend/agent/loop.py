@@ -47,7 +47,12 @@ Keep responses concise and actionable. If a tool returns an error, report it cle
 
 
 def _build_system_prompt() -> str:
-    """Construct the system prompt from available tool definitions."""
+    """Construct the system prompt from available tool definitions.
+
+    Combines static tool schemas with dynamic registry tool definitions
+    and appends CLI tool descriptions so the agent knows which external
+    CLI utilities are available.
+    """
     tool_lines: list[str] = []
     for tool_schema in get_tool_schemas():
         fn = tool_schema["function"]
@@ -61,6 +66,18 @@ def _build_system_prompt() -> str:
         for pname, pdef in props.items():
             req = " (required)" if pname in required else ""
             tool_lines.append(f"      - {pname}: {pdef.get('description', '')}{req}")
+
+    # Append CLI descriptions from the registry
+    try:
+        from backend.registry.registry import ToolRegistry  # lazy: avoid circular import
+
+        registry = ToolRegistry.get_instance()
+        cli_text = registry.get_cli_descriptions()
+        if cli_text:
+            tool_lines.append("")
+            tool_lines.append(cli_text)
+    except Exception:
+        logger.debug("ToolRegistry not available, skipping CLI descriptions")
 
     return DEFAULT_SYSTEM_PROMPT.format(tool_descriptions="\n".join(tool_lines))
 
