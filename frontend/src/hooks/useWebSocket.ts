@@ -12,7 +12,7 @@ interface UseWebSocketReturn {
 }
 
 export function useWebSocket(
-  url: string = 'ws://localhost:8000/ws',
+  url: string = '/ws',
 ): UseWebSocketReturn {
   const [status, setStatus] = useState<WebSocketStatus>('disconnected')
   const [lastMessage, setLastMessage] = useState<unknown | null>(null)

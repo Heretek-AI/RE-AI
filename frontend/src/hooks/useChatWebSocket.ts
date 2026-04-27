@@ -29,7 +29,7 @@ interface UseChatWebSocketReturn {
   clearConversation: () => void
 }
 
-const CHAT_WS_URL = 'ws://localhost:8000/ws/chat'
+const CHAT_WS_URL = '/ws/chat'
 
 let nextMessageId = 1
 
