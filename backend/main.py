@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.agent.tools import set_rag_store
+from backend.api.analysis import router as analysis_router
 from backend.api.chat_ws import router as chat_ws_router
 from backend.api.config import router as config_router
 from backend.api.health import router as health_router
@@ -77,6 +78,7 @@ app.add_middleware(
 )
 
 # --- Routers ---
+app.include_router(analysis_router)
 app.include_router(config_router)
 app.include_router(health_router)
 app.include_router(milestones_router)
