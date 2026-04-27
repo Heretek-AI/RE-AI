@@ -19,6 +19,7 @@ from backend.analysis.base import (
     PeStructureResult,
     StringsResult,
 )
+from backend.analysis.ida_pro import IdaProBackend
 from backend.analysis.native import NativePythonBackend
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _ANALYSIS_BACKENDS: dict[str, type[AbstractAnalysisBackend]] = {
     "native": NativePythonBackend,
+    "ida_pro": IdaProBackend,
 }
 
 
@@ -70,6 +72,7 @@ def list_available_backends() -> list[dict[str, str]]:
     """
     descriptions: dict[str, str] = {
         "native": "Built-in Python analysis using pefile + capstone",
+        "ida_pro": "IDA Pro headless analysis via subprocess scripting",
     }
     result: list[dict[str, str]] = []
     for name in _ANALYSIS_BACKENDS:
@@ -89,10 +92,11 @@ __all__: list[str] = [
     "AnalysisError",
     "DisassemblyResult",
     "FileInfoResult",
+    "IdaProBackend",
     "ImportsExportsResult",
+    "NativePythonBackend",
     "PeStructureResult",
     "StringsResult",
-    "NativePythonBackend",
     "get_analysis_backend",
     "list_available_backends",
 ]
