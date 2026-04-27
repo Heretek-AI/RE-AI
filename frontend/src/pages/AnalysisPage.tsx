@@ -98,8 +98,60 @@ function TabPanel({ active, children }: TabPanelProps) {
 
 // ── PE Structure Tab ───────────────────────────────────────────────────────
 
+const MACHINE_COLORS: Record<string, string> = {
+  AMD64: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
+  I386: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+  ARM: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
+  ARM64: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
+}
+
+/** Sortable column descriptor. null = sort descending. */
+type SortDir = 'asc' | 'desc'
+type SectionKey = 'name' | 'virtual_address' | 'virtual_size' | 'size_of_raw_data' | 'characteristics'
+
 function PeStructureTab({ data }: { data: PeStructureResult | null }) {
   if (!data) return <p className="text-sm text-muted-foreground">No PE structure data.</p>
+
+  const [sortKey, setSortKey] = useState<SectionKey>('name')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  function toggleSort(key: SectionKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  const sortedSections = [...data.sections].sort((a, b) => {
+    let cmp = 0
+    switch (sortKey) {
+      case 'name':
+        cmp = a.name.localeCompare(b.name)
+        break
+      case 'virtual_address':
+        cmp = a.virtual_address - b.virtual_address
+        break
+      case 'virtual_size':
+        cmp = a.virtual_size - b.virtual_size
+        break
+      case 'size_of_raw_data':
+        cmp = a.size_of_raw_data - b.size_of_raw_data
+        break
+      case 'characteristics':
+        cmp = a.characteristics.localeCompare(b.characteristics)
+        break
+    }
+    return sortDir === 'asc' ? cmp : -cmp
+  })
+
+  const machineColor = MACHINE_COLORS[data.machine_type] ?? 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+
+  function SortIcon({ col }: { col: SectionKey }) {
+    if (sortKey !== col) return <span className="ml-1 text-muted-foreground/40">↕</span>
+    return <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>
+  }
 
   return (
     <div className="space-y-4">
@@ -111,7 +163,9 @@ function PeStructureTab({ data }: { data: PeStructureResult | null }) {
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <dt className="text-muted-foreground">Machine Type</dt>
             <dd>
-              <Badge variant="outline">{data.machine_type}</Badge>
+              <Badge className={`font-mono ${machineColor}`} variant="outline">
+                {data.machine_type}
+              </Badge>
             </dd>
             <dt className="text-muted-foreground">Characteristics</dt>
             <dd className="font-mono text-xs">{data.characteristics}</dd>
@@ -140,15 +194,26 @@ function PeStructureTab({ data }: { data: PeStructureResult | null }) {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">Name</th>
-                  <th className="pb-2 pr-4 font-medium">VA</th>
-                  <th className="pb-2 pr-4 font-medium">Virtual Size</th>
-                  <th className="pb-2 pr-4 font-medium">Raw Size</th>
-                  <th className="pb-2 font-medium">Characteristics</th>
+                  {([
+                    { key: 'name' as const, label: 'Name' },
+                    { key: 'virtual_address' as const, label: 'VA' },
+                    { key: 'virtual_size' as const, label: 'Virtual Size' },
+                    { key: 'size_of_raw_data' as const, label: 'Raw Size' },
+                    { key: 'characteristics' as const, label: 'Characteristics' },
+                  ]).map((col) => (
+                    <th
+                      key={col.key}
+                      className="cursor-pointer pb-2 pr-4 font-medium select-none hover:text-foreground"
+                      onClick={() => toggleSort(col.key)}
+                    >
+                      {col.label}
+                      <SortIcon col={col.key} />
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {data.sections.map((sec) => (
+                {sortedSections.map((sec) => (
                   <tr key={sec.name} className="border-b last:border-0">
                     <td className="py-2 pr-4 font-mono text-xs">{sec.name}</td>
                     <td className="py-2 pr-4 font-mono text-xs">
@@ -173,80 +238,128 @@ function PeStructureTab({ data }: { data: PeStructureResult | null }) {
 function ImportsExportsTab({ data }: { data: ImportsExportsResult | null }) {
   if (!data) return <p className="text-sm text-muted-foreground">No import/export data.</p>
 
-  return (
-    <div className="space-y-6">
-      {/* Imports */}
-      {data.imports.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Imports ({data.imports.length} DLLs)
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {data.imports.map((dll) => (
-              <details key={dll.dll} className="group">
-                <summary className="cursor-pointer text-sm font-medium hover:text-foreground/80">
-                  {dll.dll}
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    ({dll.imports.length} function{dll.imports.length !== 1 ? 's' : ''})
-                  </span>
-                </summary>
-                <ul className="mt-2 space-y-0.5 pl-4">
-                  {dll.imports.map((imp, i) => (
-                    <li key={i} className="text-xs font-mono text-muted-foreground">
-                      {imp.name ?? `ordinal_${imp.ordinal}`}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+  const hasImports = data.imports.length > 0
+  const hasExports = data.exports.length > 0
 
-      {/* Exports */}
-      {data.exports.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Exports ({data.exports.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {/* Imports — left column */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Imports
+            {hasImports && (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                ({data.imports.length} DLL{data.imports.length !== 1 ? 's' : ''})
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!hasImports ? (
+            <p className="text-sm text-muted-foreground">No imports found.</p>
+          ) : (
+            <div className="space-y-3">
+              {data.imports.map((dll) => (
+                <details key={dll.dll} className="group">
+                  <summary className="cursor-pointer text-sm font-medium hover:text-foreground/80">
+                    {dll.dll}
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      ({dll.imports.length} function{dll.imports.length !== 1 ? 's' : ''})
+                    </span>
+                  </summary>
+                  <div className="mt-2 overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b text-muted-foreground">
+                          <th className="pb-1 pr-2 font-medium">Name</th>
+                          <th className="pb-1 pr-2 font-medium">Hint</th>
+                          <th className="pb-1 pr-2 font-medium">Ordinal</th>
+                          <th className="pb-1 pr-2 font-medium">Address</th>
+                          <th className="pb-1 font-medium" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dll.imports.map((imp, i) => (
+                          <tr key={i} className="border-b last:border-0">
+                            <td className="py-1 pr-2 font-mono">
+                              {imp.name ?? <span className="italic text-muted-foreground">(unnamed)</span>}
+                            </td>
+                            <td className="py-1 pr-2 font-mono text-muted-foreground">
+                              {imp.hint !== 0 ? `0x${imp.hint.toString(16).toUpperCase()}` : '—'}
+                            </td>
+                            <td className="py-1 pr-2 font-mono text-muted-foreground">
+                              {imp.ordinal}
+                            </td>
+                            <td className="py-1 pr-2 font-mono text-muted-foreground">
+                              0x{imp.address.toString(16).toUpperCase()}
+                            </td>
+                            <td className="py-1">
+                              {imp.import_by_ordinal && (
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                  By Ordinal
+                                </Badge>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Exports — right column */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Exports
+            {hasExports && (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                ({data.exports.length} symbol{data.exports.length !== 1 ? 's' : ''})
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!hasExports ? (
+            <p className="text-sm text-muted-foreground">No exports found.</p>
+          ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b text-muted-foreground">
-                    <th className="pb-2 pr-4 font-medium">Ordinal</th>
-                    <th className="pb-2 pr-4 font-medium">Name</th>
-                    <th className="pb-2 font-medium">Address</th>
+                    <th className="pb-2 pr-3 font-medium">Ordinal</th>
+                    <th className="pb-2 pr-3 font-medium">Name</th>
+                    <th className="pb-2 pr-3 font-medium">Address</th>
+                    <th className="pb-2 font-medium">Forwarder</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.exports.map((exp, i) => (
                     <tr key={i} className="border-b last:border-0">
-                      <td className="py-1.5 pr-4 font-mono text-xs">{exp.ordinal}</td>
-                      <td className="py-1.5 pr-4 font-mono text-xs">
-                        {exp.name ?? (exp.forwarder_string ? `→ ${exp.forwarder_string}` : '—')}
+                      <td className="py-1.5 pr-3 font-mono text-muted-foreground">{exp.ordinal}</td>
+                      <td className="py-1.5 pr-3 font-mono">
+                        {exp.name ?? <span className="italic text-muted-foreground">(unnamed)</span>}
                       </td>
-                      <td className="py-1.5 font-mono text-xs">
+                      <td className="py-1.5 pr-3 font-mono text-muted-foreground">
                         0x{exp.address.toString(16).toUpperCase()}
+                      </td>
+                      <td className="py-1.5 font-mono text-muted-foreground">
+                        {exp.forwarder_string ?? '—'}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {data.imports.length === 0 && data.exports.length === 0 && (
-        <p className="text-sm text-muted-foreground">
-          No imports or exports found in this file.
-        </p>
-      )}
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
