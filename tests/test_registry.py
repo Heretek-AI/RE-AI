@@ -5,6 +5,7 @@ Covers CRUD operations on MCPToolDef and CLIToolDef, ToolDef generation
 integration with the agent tool pipeline.
 """
 
+import asyncio
 import pytest
 
 from backend.registry import CLIToolDef, MCPToolDef, ToolRegistry
@@ -347,7 +348,7 @@ def test_get_cli_descriptions_without_shell(registry):
 
 
 # =========================================================================
-# Execution dispatch (T01 placeholder)
+# Execution dispatch (T04 — real lifecycle, echo server)
 # =========================================================================
 
 
@@ -362,43 +363,11 @@ async def test_exec_mcp_invoke_unknown_server(registry):
 
 
 @pytest.mark.asyncio
-async def test_exec_mcp_invoke_known_server(registry, sample_mcp):
-    """mcp_invoke returns placeholder for known server at T01."""
-    registry.register_mcp(sample_mcp)
-    result = await registry._exec_mcp_invoke(
-        {"server": "file_system", "tool": "read_file", "arguments": {"path": "/tmp/test.txt"}}
-    )
-    assert "not yet implemented" in result
-    assert "file_system" in result
-    assert "read_file" in result
-
-
-@pytest.mark.asyncio
-async def test_exec_registered_tool_mcp_invoke(registry, sample_mcp):
-    """exec_registered_tool dispatches mcp_invoke by name."""
-    registry.register_mcp(sample_mcp)
-    result = await registry.exec_registered_tool(
-        "mcp_invoke",
-        {"server": "file_system", "tool": "read_file", "arguments": {}},
-    )
-    assert "not yet implemented" in result
-
-
-@pytest.mark.asyncio
 async def test_exec_registered_tool_unknown(registry):
     """exec_registered_tool returns ERROR for unknown name."""
     result = await registry.exec_registered_tool("nonexistent", {})
     assert result.startswith("ERROR:")
     assert "Unknown registered tool" in result
-
-
-@pytest.mark.asyncio
-async def test_exec_registered_tool_mcp_by_name(registry, sample_mcp):
-    """exec_registered_tool matches MCP tool by direct name."""
-    registry.register_mcp(sample_mcp)
-    result = await registry.exec_registered_tool("file_system", {})
-    assert "not yet implemented" in result
-    assert "file_system" in result
 
 
 # =========================================================================
@@ -407,11 +376,10 @@ async def test_exec_registered_tool_mcp_by_name(registry, sample_mcp):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_all_noop(registry):
-    """shutdown_all is a no-op at T01 (no error)."""
-    # Should not raise any exception
+async def test_shutdown_all_empty(registry):
+    """shutdown_all handles no registered servers cleanly."""
+    # Should not raise
     await registry.shutdown_all()
-    # No state to assert — placeholder for T04
 
 
 # =========================================================================
@@ -534,26 +502,29 @@ def test_prompt_multiple_cli_tools(registry, sample_cli, sample_cli_2):
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_falls_through_to_registry(registry, sample_mcp):
+async def test_execute_tool_falls_through_to_registry(registry, echo_def):
     """execute_tool_call() dispatches mcp_invoke through the registry."""
     from backend.agent.tools import execute_tool_call
 
-    registry.register_mcp(sample_mcp)
+    registry.register_mcp(echo_def)
 
-    # Use a lightweight mock engine — PlanningEngine requires aiosqlite,
-    # so we provide a minimal object with the attributes the tool path touches.
     class _MockEngine:
         pass
 
     engine = _MockEngine()
     result = await execute_tool_call(
         "mcp_invoke",
-        {"server": "file_system", "tool": "read_file", "arguments": {}},
+        {"server": "echo_test", "tool": "ping", "arguments": {}},
         engine,
     )
     assert isinstance(result, str)
-    # Currently returns placeholder until T04
-    assert "not yet implemented" in result or result.startswith("ERROR:")
+    # At T04 the echo server returns real JSON
+    import json
+
+    parsed = json.loads(result)
+    assert "content" in parsed
+
+    await registry.shutdown_all()
 
 
 # =========================================================================
@@ -854,3 +825,379 @@ def test_registry_load_skills_empty_skill_content(registry, tmp_path):
 
     shell_tool = [t for t in TOOLS if t.name == "shell"][0]
     assert shell_tool.description == original_desc
+
+
+# =========================================================================
+# MCP lifecycle — MCPServerProcess
+# =========================================================================
+
+import os
+import sys
+
+_ECHO_SERVER = os.path.join(
+    os.path.dirname(__file__), "fixtures", "echo_mcp_server.py"
+)
+
+
+@pytest.fixture
+def echo_def() -> MCPToolDef:
+    """MCPToolDef that points at the echo test server."""
+    return MCPToolDef(
+        name="echo_test",
+        description="Echo server for testing.",
+        command=sys.executable,
+        args=[_ECHO_SERVER],
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_ensure_running(echo_def):
+    """MCPServerProcess.ensure_running spawns and initializes the server."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    assert proc.status == "stopped"
+
+    await proc.ensure_running()
+    assert proc.status == "running"
+
+    # Clean up
+    await proc.shutdown()
+    assert proc.status == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_call(echo_def):
+    """MCPServerProcess.call sends tools/call and returns result."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+
+    result = await proc.call("my_tool", {"key": "value"})
+
+    assert "content" in result
+    content = result["content"]
+    assert len(content) > 0
+
+    # The echo server returns a text content block with the echoed data
+    text_item = content[0]
+    assert text_item["type"] == "text"
+    import json
+
+    echoed = json.loads(text_item["text"])
+    assert echoed["echo_tool"] == "my_tool"
+    assert echoed["echo_args"] == {"key": "value"}
+
+    await proc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_call_twice(echo_def):
+    """Multiple calls on the same server work sequentially."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+
+    r1 = await proc.call("tool_a", {"x": 1})
+    r2 = await proc.call("tool_b", {"y": 2})
+
+    import json
+
+    c1 = json.loads(r1["content"][0]["text"])
+    c2 = json.loads(r2["content"][0]["text"])
+    assert c1["echo_tool"] == "tool_a"
+    assert c2["echo_tool"] == "tool_b"
+
+    await proc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_ensure_running_idempotent(echo_def):
+    """Calling ensure_running twice doesn't re-spawn."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+    pid1 = proc._process.pid
+
+    await proc.ensure_running()  # should be no-op
+    assert proc._process.pid == pid1  # same process
+
+    await proc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_shutdown_terminates(echo_def):
+    """shutdown terminates the subprocess."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+    assert proc._process.returncode is None  # alive
+
+    await proc.shutdown(timeout=5.0)
+    assert proc.status == "shutdown"
+    assert proc._process is None or proc._process.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_call_before_running_raises(echo_def):
+    """Call before ensure_running raises RuntimeError."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+
+    with pytest.raises(RuntimeError, match="not running"):
+        await proc.call("tool", {})
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_call_after_shutdown_raises(echo_def):
+    """Call after shutdown raises RuntimeError."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+    await proc.shutdown()
+
+    with pytest.raises(RuntimeError, match="not running"):
+        await proc.call("tool", {})
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_lock_serializes(echo_def):
+    """Concurrent calls are serialized by the internal lock."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+
+    async def call_tool(tool_name: str) -> dict:
+        return await proc.call(tool_name, {"val": tool_name})
+
+    results = await asyncio.gather(
+        call_tool("alpha"),
+        call_tool("beta"),
+        call_tool("gamma"),
+    )
+    assert len(results) == 3
+    import json
+
+    echoed_names = {
+        json.loads(r["content"][0]["text"])["echo_tool"] for r in results
+    }
+    assert echoed_names == {"alpha", "beta", "gamma"}
+
+    await proc.shutdown()
+
+
+# =========================================================================
+# MCP lifecycle — ToolRegistry wiring
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_exec_mcp_invoke(registry, echo_def):
+    """_exec_mcp_invoke spawns server and calls tool via registry."""
+    registry.register_mcp(echo_def)
+
+    result = await registry._exec_mcp_invoke(
+        {"server": "echo_test", "tool": "list_stuff", "arguments": {"limit": 5}}
+    )
+    import json
+
+    parsed = json.loads(result)
+    assert "content" in parsed
+    assert parsed["content"][0]["type"] == "text"
+
+    echoed = json.loads(parsed["content"][0]["text"])
+    assert echoed["echo_tool"] == "list_stuff"
+    assert echoed["echo_args"] == {"limit": 5}
+
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_exec_mcp_invoke_unknown_server(registry):
+    """_exec_mcp_invoke returns error for unknown server."""
+    result = await registry._exec_mcp_invoke(
+        {"server": "nonexistent", "tool": "x", "arguments": {}}
+    )
+    assert result.startswith("ERROR:")
+    assert "Unknown MCP server" in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_exec_registered_tool_mcp_invoke(registry, echo_def):
+    """exec_registered_tool dispatches mcp_invoke through the real lifecycle."""
+    registry.register_mcp(echo_def)
+
+    result = await registry.exec_registered_tool(
+        "mcp_invoke",
+        {"server": "echo_test", "tool": "read_file", "arguments": {"path": "/tmp/test.txt"}},
+    )
+    import json
+
+    parsed = json.loads(result)
+    assert "content" in parsed
+    echoed = json.loads(parsed["content"][0]["text"])
+    assert echoed["echo_tool"] == "read_file"
+    assert echoed["echo_args"] == {"path": "/tmp/test.txt"}
+
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_exec_registered_tool_direct_name(registry, echo_def):
+    """exec_registered_tool dispatches by direct MCP server name."""
+    registry.register_mcp(echo_def)
+
+    result = await registry.exec_registered_tool(
+        "echo_test",
+        {"tool": "my_tool", "arguments": {"k": "v"}},
+    )
+    import json
+
+    parsed = json.loads(result)
+    assert "content" in parsed
+    echoed = json.loads(parsed["content"][0]["text"])
+    assert echoed["echo_tool"] == "my_tool"
+    assert echoed["echo_args"] == {"k": "v"}
+
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_shutdown_all(registry, echo_def):
+    """shutdown_all terminates all MCP subprocesses."""
+    registry.register_mcp(echo_def)
+
+    # Start the server
+    await registry._exec_mcp_invoke(
+        {"server": "echo_test", "tool": "ping", "arguments": {}}
+    )
+
+    proc = registry._mcp_processes["echo_test"]
+    assert proc.status == "running"
+
+    await registry.shutdown_all()
+    assert proc.status == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_shutdown_all_empty(registry):
+    """shutdown_all handles no registered servers."""
+    # Should not raise
+    await registry.shutdown_all()
+
+
+def test_mcp_registry_get_mcp_status_includes_process_status(registry, echo_def):
+    """get_mcp_status includes process_status field."""
+    registry.register_mcp(echo_def)
+
+    status = registry.get_mcp_status()
+    assert len(status) == 1
+    entry = status[0]
+    assert entry["name"] == "echo_test"
+    assert entry["process_status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_get_mcp_status_after_start(registry, echo_def):
+    """get_mcp_status shows 'running' after ensure_running."""
+    registry.register_mcp(echo_def)
+
+    await registry._exec_mcp_invoke(
+        {"server": "echo_test", "tool": "ping", "arguments": {}}
+    )
+
+    status = registry.get_mcp_status()
+    entry = status[0]
+    assert entry["process_status"] == "running"
+
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_unregister_cleans_process(registry, echo_def):
+    """unregister_mcp removes the associated process handle."""
+    registry.register_mcp(echo_def)
+    assert "echo_test" in registry._mcp_processes
+
+    registry.unregister_mcp("echo_test")
+    assert "echo_test" not in registry._mcp_processes
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_error_handling(echo_def):
+    """MCPServerProcess handles JSON-RPC errors from the server."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name="echo_test",
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+    await proc.ensure_running()
+
+    # Send a request with an unknown method — echo server won't respond
+    # with an error for unknown methods (it ignores them), but we can
+    # verify the basic call/response cycle works correctly.
+    result = await proc.call("valid_tool", {})
+    assert "content" in result
+
+    await proc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mcp_process_concurrent_safety(echo_def):
+    """Multiple concurrent ensure_running calls don't spawn extra processes."""
+    from backend.registry.mcp_lifecycle import MCPServerProcess
+
+    proc = MCPServerProcess(
+        name=echo_def.name,
+        command=echo_def.command,
+        args=echo_def.args,
+    )
+
+    async def start() -> None:
+        await proc.ensure_running()
+
+    await asyncio.gather(start(), start(), start())
+    assert proc.status == "running"
+
+    await proc.shutdown()

@@ -16,10 +16,13 @@ with usage patterns and best practices.  ``load_skills()`` calls the
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any, Optional
 
 from backend.agent.tools import ToolDef
+from backend.registry.mcp_lifecycle import MCPServerProcess
 from backend.registry.models import CLIToolDef, MCPToolDef, SkillDef
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,7 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._mcp_tools: dict[str, MCPToolDef] = {}
+        self._mcp_processes: dict[str, MCPServerProcess] = {}
         self._cli_tools: dict[str, CLIToolDef] = {}
         self._mcp_invoke_tool: Optional[ToolDef] = None
         self._rebuild_invoke_tool()
@@ -69,21 +73,31 @@ class ToolRegistry:
         """Register an MCP server definition.
 
         If a tool with the same *name* already exists it is replaced.
-        The ``mcp_invoke`` ``ToolDef`` description is rebuilt to reflect
-        the updated list.
+        An :class:`MCPServerProcess` is created (but not spawned) for
+        lifecycle management.  The ``mcp_invoke`` ``ToolDef`` description
+        is rebuilt to reflect the updated list.
         """
         self._mcp_tools[tool.name] = tool
+        self._mcp_processes[tool.name] = MCPServerProcess(
+            name=tool.name,
+            command=tool.command,
+            args=tool.args,
+            env_vars=tool.env_vars,
+        )
         self._rebuild_invoke_tool()
         logger.info("Registered MCP tool '%s'", tool.name)
 
     def unregister_mcp(self, name: str) -> bool:
         """Remove a registered MCP server by *name*.
 
-        Returns ``True`` if the tool existed and was removed, ``False``
-        if no tool with that name was found.
+        The associated :class:`MCPServerProcess` is removed (it should
+        be shut down separately via :meth:`shutdown_all`).  Returns
+        ``True`` if the tool existed and was removed, ``False`` if no
+        tool with that name was found.
         """
         if name in self._mcp_tools:
             del self._mcp_tools[name]
+            self._mcp_processes.pop(name, None)
             self._rebuild_invoke_tool()
             logger.info("Unregistered MCP tool '%s'", name)
             return True
@@ -101,20 +115,25 @@ class ToolRegistry:
         return list(self._mcp_tools.values())
 
     def get_mcp_status(self) -> list[dict[str, Any]]:
-        """Return per-server status information.
+        """Return per-server status including subprocess lifecycle state.
 
-        For T01 this returns basic registration state.
-        T04 will enrich this with subprocess lifecycle status.
+        Each entry includes the server definition plus the current
+        :attr:`MCPServerProcess.status`.
         """
-        return [
-            {
-                "name": t.name,
-                "description": t.description,
-                "command": t.command,
-                "registered": True,
-            }
-            for t in self._mcp_tools.values()
-        ]
+        result: list[dict[str, Any]] = []
+        for t in self._mcp_tools.values():
+            proc = self._mcp_processes.get(t.name)
+            result.append(
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "command": t.command,
+                    "args": t.args,
+                    "registered": True,
+                    "process_status": proc.status if proc else "unknown",
+                }
+            )
+        return result
 
     # -------------------------------------------------------------------
     # CLI tool management
@@ -306,9 +325,9 @@ class ToolRegistry:
     ) -> str:
         """Execute a tool on a registered MCP server.
 
-        This is the ``async_execute`` callable for the ``mcp_invoke``
-        ``ToolDef``.  At T01 it validates inputs and returns a placeholder
-        result.  T04 replaces this with actual JSON-RPC subprocess calls.
+        Spawns the subprocess on first call (via
+        :meth:`MCPServerProcess.ensure_running`) then dispatches the
+        JSON-RPC ``tools/call`` request.
         """
         server_name: str = args.get("server", "")
         tool_name: str = args.get("tool", "")
@@ -321,12 +340,19 @@ class ToolRegistry:
                 f"Available servers: {available or '(none)'}"
             )
 
-        # T04: actual MCP subprocess lifecycle and JSON-RPC dispatch
-        return (
-            f"MCP tool dispatch not yet implemented (T04). "
-            f"Would call '{tool_name}' on server '{server_name}' "
-            f"with arguments: {tool_args}"
-        )
+        proc = self._mcp_processes.get(server_name)
+        if proc is None:
+            return f"ERROR: No process handle for MCP server '{server_name}'."
+
+        try:
+            await proc.ensure_running()
+            result = await proc.call(tool_name, tool_args)
+            return json.dumps(result, indent=2, default=str)
+        except Exception as exc:
+            logger.exception(
+                "MCP call failed: server=%s tool=%s", server_name, tool_name
+            )
+            return f"ERROR: MCP call failed: {exc}"
 
     async def exec_registered_tool(
         self, name: str, args: dict[str, Any], engine: Any = None
@@ -334,33 +360,57 @@ class ToolRegistry:
         """Execute a tool by *name* through the registry.
 
         Called by ``backend.agent.tools.execute_tool_call()`` when the
-        name doesn't match a static tool.  Currently a placeholder that
-        delegates to the ``mcp_invoke`` handler when ``name == "mcp_invoke"``.
+        name doesn't match a static tool.
 
-        T04 extends this to support direct MCP tool dispatch.
+        Supports two dispatch modes:
+
+        1. ``name == "mcp_invoke"`` — delegates to
+           :meth:`_exec_mcp_invoke` with the ``args`` dict.
+        2. ``name`` matches an MCP server name — dispatches a single-tool
+           shorthand call on that server, using ``args`` as the tool
+           arguments.
         """
         if name == "mcp_invoke":
             return await self._exec_mcp_invoke(args, engine)
 
-        # Check MCP tools by name
+        # Check MCP tools by name — shorthand dispatch
         if name in self._mcp_tools:
-            mcp = self._mcp_tools[name]
-            return (
-                f"MCP tool '{name}' dispatch not yet implemented (T04). "
-                f"Would invoke '{mcp.name}' server."
-            )
+            proc = self._mcp_processes.get(name)
+            if proc is None:
+                return f"ERROR: No process handle for MCP server '{name}'."
+            try:
+                await proc.ensure_running()
+                result = await proc.call(args.get("tool", ""), args.get("arguments", {}))
+                return json.dumps(result, indent=2, default=str)
+            except Exception as exc:
+                logger.exception("MCP direct call failed: server=%s", name)
+                return f"ERROR: MCP call failed: {exc}"
 
         return f"ERROR: Unknown registered tool '{name}'."
 
     # -------------------------------------------------------------------
-    # Lifecycle (placeholder — T04 wires real MCP subprocess shutdown)
+    # Lifecycle
     # -------------------------------------------------------------------
 
     async def shutdown_all(self) -> None:
         """Shut down all registered MCP server subprocesses.
 
-        T01: no-op placeholder.
-        T04: iterates ``MCPServerProcess`` instances, sends shutdown
-        JSON-RPC, waits for termination with per-server timeout.
+        Iterates :attr:`_mcp_processes`, shuts down each one with a
+        5-second per-server timeout.  Errors from individual servers
+        are logged but do not prevent other servers from shutting down.
         """
-        logger.info("ToolRegistry.shutdown_all() called — no-op at T01")
+        tasks: list[asyncio.Task[None]] = []
+        for name, proc in list(self._mcp_processes.items()):
+            if proc.status not in ("stopped", "shutdown"):
+                logger.info("Shutting down MCP server '%s'", name)
+                tasks.append(asyncio.create_task(proc.shutdown(timeout=5.0)))
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for name, r in zip(list(self._mcp_processes.keys()), results):
+                if isinstance(r, Exception):
+                    logger.error(
+                        "Error shutting down MCP server '%s': %s", name, r
+                    )
+
+        logger.info("ToolRegistry.shutdown_all() complete")

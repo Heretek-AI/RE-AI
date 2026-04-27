@@ -102,7 +102,7 @@ async def test_execute_tool_call_unknown():
     engine = await _dummy_engine()
     result = await execute_tool_call("nonexistent_tool", {}, engine)
     assert result.startswith("ERROR:")
-    assert "Unknown tool" in result
+    assert "Unknown registered tool" in result
 
 
 @pytest.mark.asyncio
