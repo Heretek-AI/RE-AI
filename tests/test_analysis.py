@@ -571,6 +571,223 @@ class TestAnalysisRegistryExtended:
 
 
 # ---------------------------------------------------------------------------
+# T03 — GhidraBackend and extended factory tests
+# ---------------------------------------------------------------------------
+
+
+class TestGhidraBackend:
+    """GhidraBackend instantiation and subprocess-calling methods.
+
+    Follows the TestIdaProBackend pattern exactly, adapted for Ghidra's
+    ``analyzeHeadless`` subprocess and ``_run_ghidra_script`` method.
+    """
+
+    @staticmethod
+    def test_can_instantiate() -> None:
+        """GhidraBackend accepts a config dict with tool_configs.ghidra."""
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend(
+            {"tool_configs": {"ghidra": "/mock/analyzeHeadless"}}
+        )
+        assert backend._ghidra_path == "/mock/analyzeHeadless"
+
+    @staticmethod
+    def test_missing_config_defaults() -> None:
+        """GhidraBackend({}) works without config — ghidra_path is None."""
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({})
+        assert backend._ghidra_path is None
+
+    @pytest.mark.asyncio
+    async def test_analyze_pe_structure_calls_script(self) -> None:
+        """analyze_pe_structure calls _run_ghidra_script with 'structure' mode."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.return_value = {"machine_type": "AMD64"}
+            result = await backend.analyze_pe_structure("/fake/path.dll")
+
+        mock_run.assert_called_once_with("structure", "/fake/path.dll")
+        assert result == {"machine_type": "AMD64"}
+
+    @pytest.mark.asyncio
+    async def test_get_imports_exports_calls_script(self) -> None:
+        """get_imports_exports calls _run_ghidra_script with 'imports-exports' mode."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.return_value = {"imports": [], "exports": []}
+            result = await backend.get_imports_exports("/fake/path.dll")
+
+        mock_run.assert_called_once_with("imports-exports", "/fake/path.dll")
+        assert result == {"imports": [], "exports": []}
+
+    @pytest.mark.asyncio
+    async def test_extract_strings_passes_min_length(self) -> None:
+        """extract_strings passes GHIDRA_MIN_LENGTH via env_extra."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.return_value = {
+                "strings": [],
+                "total_count": 0,
+                "displayed_count": 0,
+            }
+            await backend.extract_strings("/fake/path.dll", min_length=10)
+
+        mock_run.assert_called_once_with(
+            "strings",
+            "/fake/path.dll",
+            env_extra={"GHIDRA_MIN_LENGTH": "10"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_disassemble_function_passes_params(self) -> None:
+        """disassemble_function passes section/offset/size via env_extra."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.return_value = {"instructions": []}
+            await backend.disassemble_function(
+                "/fake/path.dll",
+                section_name=".text",
+                offset=0x1000,
+                size=128,
+            )
+
+        mock_run.assert_called_once_with(
+            "disassembly",
+            "/fake/path.dll",
+            env_extra={
+                "GHIDRA_SECTION_NAME": ".text",
+                "GHIDRA_OFFSET": "4096",
+                "GHIDRA_SIZE": "128",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_file_info_calls_script(self) -> None:
+        """get_file_info calls _run_ghidra_script with 'file-info' mode."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.return_value = {
+                "path": "/fake/path.dll",
+                "size_bytes": 1024,
+            }
+            result = await backend.get_file_info("/fake/path.dll")
+
+        mock_run.assert_called_once_with("file-info", "/fake/path.dll")
+        assert result["size_bytes"] == 1024
+
+    @pytest.mark.asyncio
+    async def test_not_configured_error(self) -> None:
+        """Backend with no ghidra path raises AnalysisError on any method call."""
+        from backend.analysis.ghidra import GhidraBackend, AnalysisError
+
+        backend = GhidraBackend({})
+        assert backend._ghidra_path is None
+
+        with pytest.raises(AnalysisError, match="Ghidra is not configured"):
+            await backend.analyze_pe_structure("/fake/path.dll")
+
+        with pytest.raises(AnalysisError, match="Ghidra is not configured"):
+            await backend.get_imports_exports("/fake/path.dll")
+
+        with pytest.raises(AnalysisError, match="Ghidra is not configured"):
+            await backend.extract_strings("/fake/path.dll")
+
+        with pytest.raises(AnalysisError, match="Ghidra is not configured"):
+            await backend.disassemble_function(
+                "/fake/path.dll", section_name=".text", offset=0
+            )
+
+        with pytest.raises(AnalysisError, match="Ghidra is not configured"):
+            await backend.get_file_info("/fake/path.dll")
+
+    @pytest.mark.asyncio
+    async def test_timeout_error(self) -> None:
+        """_run_ghidra_script raises AnalysisError with timeout message."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend, AnalysisError
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.side_effect = AnalysisError(
+                "Ghidra timeout (360s) for mode structure on /fake/path.dll"
+            )
+            with pytest.raises(AnalysisError):
+                await backend.analyze_pe_structure("/fake/path.dll")
+
+    @pytest.mark.asyncio
+    async def test_output_file_missing(self) -> None:
+        """_run_ghidra_script raises AnalysisError with missing output message."""
+        from unittest.mock import patch
+        from backend.analysis.ghidra import GhidraBackend, AnalysisError
+
+        backend = GhidraBackend({"tool_configs": {"ghidra": "/mock/analyzeHeadless"}})
+
+        with patch.object(backend, "_run_ghidra_script") as mock_run:
+            mock_run.side_effect = AnalysisError(
+                "Ghidra script mode structure did not produce output at "
+                "/tmp/fake.ghidra_structure.json"
+            )
+            with pytest.raises(AnalysisError):
+                await backend.analyze_pe_structure("/fake/path.dll")
+
+
+class TestAnalysisRegistryExtendedGhidra:
+    """Extended registry tests for GhidraBackend in the factory."""
+
+    @staticmethod
+    def test_list_available_backends_contains_ghidra() -> None:
+        """list_available_backends includes 'ghidra'."""
+        names = [b["name"] for b in list_available_backends()]
+        assert "ghidra" in names
+
+    @staticmethod
+    def test_factory_ghidra_config() -> None:
+        """Factory with 'ghidra' backend returns GhidraBackend instance."""
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = get_analysis_backend({
+            "analysis_backend": "ghidra",
+            "tool_configs": {"ghidra": "/mock/analyzeHeadless"},
+        })
+        assert isinstance(backend, GhidraBackend)
+
+    @staticmethod
+    def test_factory_config_passed_to_backend() -> None:
+        """Config dict reaches the GhidraBackend constructor."""
+        from backend.analysis.ghidra import GhidraBackend
+
+        backend = get_analysis_backend({
+            "analysis_backend": "ghidra",
+            "tool_configs": {"ghidra": "/mock/analyzeHeadless"},
+        })
+        assert isinstance(backend, GhidraBackend)
+        assert backend._ghidra_path == "/mock/analyzeHeadless"
+
+
+# ---------------------------------------------------------------------------
 # T05 — Analysis ToolDefs in agent tools
 # ---------------------------------------------------------------------------
 
