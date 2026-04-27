@@ -13,8 +13,11 @@ from backend.analysis import (
     DisassemblyResult,
     FileInfoResult,
     ImportsExportsResult,
+    NativePythonBackend,
     PeStructureResult,
     StringsResult,
+    get_analysis_backend,
+    list_available_backends,
 )
 from backend.analysis.base import AbstractAnalysisBackend
 from backend.analysis.native import NativePythonBackend
@@ -340,3 +343,41 @@ class TestNativePythonBackend:
         )
         assert result["architecture"] == "ARM"
         assert len(result["instructions"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# T04 — Registry, factory, and list_available_backends
+# ---------------------------------------------------------------------------
+
+
+class TestAnalysisRegistry:
+    """Backend registry and factory function."""
+
+    @staticmethod
+    def test_factory_empty_config_returns_native() -> None:
+        """Factory returns NativePythonBackend for empty config."""
+        backend = get_analysis_backend({})
+        assert isinstance(backend, NativePythonBackend)
+
+    @staticmethod
+    def test_factory_native_config() -> None:
+        """Factory returns NativePythonBackend for 'native'."""
+        backend = get_analysis_backend({"analysis_backend": "native"})
+        assert isinstance(backend, NativePythonBackend)
+
+    @staticmethod
+    def test_factory_unknown_name_falls_back() -> None:
+        """Factory returns NativePythonBackend for unknown name (fallback)."""
+        backend = get_analysis_backend({"analysis_backend": "ida_pro"})
+        assert isinstance(backend, NativePythonBackend)
+
+    @staticmethod
+    def test_list_available_backends_contains_native() -> None:
+        """list_available_backends returns at least one entry with 'native'."""
+        backends = list_available_backends()
+        assert len(backends) >= 1
+        names = [b["name"] for b in backends]
+        assert "native" in names
+        for b in backends:
+            assert "name" in b
+            assert "description" in b
