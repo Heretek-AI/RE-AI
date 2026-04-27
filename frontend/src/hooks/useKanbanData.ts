@@ -5,7 +5,7 @@ import { useWebSocket } from './useWebSocket'
 
 // ── Type definitions (matching Pydantic Response models) ────────────────────
 
-interface Milestone {
+export interface Milestone {
   id: number
   title: string
   description: string
@@ -14,7 +14,7 @@ interface Milestone {
   updated_at: string
 }
 
-interface Slice {
+export interface Slice {
   id: number
   milestone_id: number
   title: string
@@ -25,7 +25,7 @@ interface Slice {
   updated_at: string
 }
 
-interface Task {
+export interface Task {
   id: number
   slice_id: number
   title: string
@@ -36,7 +36,7 @@ interface Task {
   updated_at: string
 }
 
-interface KanbanData {
+export interface KanbanData {
   milestones: Milestone[]
   slices: Slice[]
   tasks: Task[]
