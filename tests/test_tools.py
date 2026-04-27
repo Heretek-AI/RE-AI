@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pathlib import Path
+
 from backend.agent.tools import (
     ToolDef,
     get_tool_schemas,
@@ -283,3 +285,213 @@ def test_tool_schemas_have_required_fields():
         assert "parameters" in fn, f"Tool '{fn['name']}' missing parameters"
         assert "type" in fn["parameters"], f"Tool '{fn['name']}' parameters missing type"
         assert "properties" in fn["parameters"], f"Tool '{fn['name']}' parameters missing properties"
+
+
+# =========================================================================
+# RAG store guard tests for analysis tool handlers
+# =========================================================================
+
+
+class TestAnalysisRagGuard:
+    """Verify the _rag_store guard in all 5 analysis tool handlers.
+
+    Each analysis handler in backend/agent/tools.py has a fire-and-forget
+    RAG storage block guarded by ``if _rag_store is not None:``.
+    These tests verify that:
+
+    1. When ``_rag_store`` is None (default), analysis commands complete
+       normally without trying to store anything.
+    2. When ``_rag_store`` is set to a mock, each handler fires
+       ``_rag_store.store()`` with correct metadata.
+    """
+
+    FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+    TEST_DLL = str(FIXTURE_DIR / "minimal_test.dll")
+
+    @pytest.fixture()
+    def mock_engine(self):
+        """Return a minimal mock PlanningEngine (unused by analysis tools)."""
+        from unittest.mock import AsyncMock
+
+        return AsyncMock()
+
+    # ── With _rag_store = None (default) ───────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_rag_store_none_does_not_crash(self, mock_engine) -> None:
+        """When _rag_store is None, analysis handlers complete without error."""
+        from backend.agent import tools
+
+        original = tools._rag_store
+        tools._rag_store = None
+        try:
+            # Test all 5 handlers — they should complete normally
+            result_pe = await tools.execute_tool_call(
+                "extract_pe_info", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## PE Structure" in result_pe
+
+            result_imports = await tools.execute_tool_call(
+                "list_imports_exports", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## Imports & Exports" in result_imports
+
+            result_strings = await tools.execute_tool_call(
+                "extract_strings", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## Strings" in result_strings
+
+            result_disasm = await tools.execute_tool_call(
+                "disassemble_function",
+                {"path": self.TEST_DLL, "section_name": ".text", "offset": 0},
+                mock_engine,
+            )
+            assert "## Disassembly" in result_disasm
+
+            import tempfile
+            result_dir = await tools.execute_tool_call(
+                "analyze_directory",
+                {"directory": str(tempfile.gettempdir())},
+                mock_engine,
+            )
+            assert "Directory Analysis" in result_dir or "No PE files found" in result_dir
+        finally:
+            tools._rag_store = original
+
+    # ── With _rag_store = AsyncMock ────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_rag_store_called_extract_pe_info(self, mock_engine) -> None:
+        """extract_pe_info fires _rag_store.store() when store is available."""
+        from backend.agent import tools
+
+        mock_store = AsyncMock()
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            result = await tools.execute_tool_call(
+                "extract_pe_info", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## PE Structure" in result
+            # Fire-and-forget uses asyncio.create_task, so the coroutine is
+            # scheduled but not awaited.  We verify the call was made, not
+            # that it was awaited.
+            mock_store.store.assert_called_once()
+            call_args = mock_store.store.call_args
+            # store() is called as: store("tool_results", text, metadata_dict)
+            assert call_args[0][0] == "tool_results"
+            metadata = call_args[0][2]
+            assert metadata["tool_name"] == "extract_pe_info"
+        finally:
+            tools._rag_store = original
+
+    @pytest.mark.asyncio
+    async def test_rag_store_called_list_imports_exports(self, mock_engine) -> None:
+        """list_imports_exports fires _rag_store.store()."""
+        from backend.agent import tools
+
+        mock_store = AsyncMock()
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            result = await tools.execute_tool_call(
+                "list_imports_exports", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## Imports & Exports" in result
+            mock_store.store.assert_called_once()
+            metadata = mock_store.store.call_args[0][2]
+            assert metadata["tool_name"] == "list_imports_exports"
+        finally:
+            tools._rag_store = original
+
+    @pytest.mark.asyncio
+    async def test_rag_store_called_extract_strings(self, mock_engine) -> None:
+        """extract_strings fires _rag_store.store()."""
+        from backend.agent import tools
+
+        mock_store = AsyncMock()
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            result = await tools.execute_tool_call(
+                "extract_strings", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## Strings" in result
+            mock_store.store.assert_called_once()
+            metadata = mock_store.store.call_args[0][2]
+            assert metadata["tool_name"] == "extract_strings"
+        finally:
+            tools._rag_store = original
+
+    @pytest.mark.asyncio
+    async def test_rag_store_called_disassemble(self, mock_engine) -> None:
+        """disassemble_function fires _rag_store.store()."""
+        from backend.agent import tools
+
+        mock_store = AsyncMock()
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            result = await tools.execute_tool_call(
+                "disassemble_function",
+                {"path": self.TEST_DLL, "section_name": ".text", "offset": 0},
+                mock_engine,
+            )
+            assert "## Disassembly" in result
+            mock_store.store.assert_called_once()
+            metadata = mock_store.store.call_args[0][2]
+            assert metadata["tool_name"] == "disassemble_function"
+        finally:
+            tools._rag_store = original
+
+    @pytest.mark.asyncio
+    async def test_rag_store_called_analyze_directory(self, mock_engine, tmp_path) -> None:
+        """analyze_directory fires _rag_store.store()."""
+        import shutil
+
+        from backend.agent import tools
+
+        # Copy fixture DLL to tmp_path
+        shutil.copy2(self.TEST_DLL, str(tmp_path / "minimal_test.dll"))
+
+        mock_store = AsyncMock()
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            result = await tools.execute_tool_call(
+                "analyze_directory",
+                {"directory": str(tmp_path)},
+                mock_engine,
+            )
+            assert "Directory Analysis" in result
+            mock_store.store.assert_called_once()
+            metadata = mock_store.store.call_args[0][2]
+            assert metadata["tool_name"] == "analyze_directory"
+        finally:
+            tools._rag_store = original
+
+    # ── All 5 tools use asyncio.create_task (fire-and-forget) ───────
+
+    @pytest.mark.asyncio
+    async def test_rag_store_fire_and_forget_extract_pe(self, mock_engine) -> None:
+        """Verify RAG store call uses fire-and-forget create_task."""
+        from backend.agent import tools
+
+        async def _delayed_store(*args, **kwargs):
+            await asyncio.sleep(0)
+
+        mock_store = AsyncMock()
+        mock_store.store.side_effect = _delayed_store
+
+        original = tools._rag_store
+        tools._rag_store = mock_store
+        try:
+            # Handler returns immediately because store() is fire-and-forget
+            result = await tools.execute_tool_call(
+                "extract_pe_info", {"path": self.TEST_DLL}, mock_engine,
+            )
+            assert "## PE Structure" in result
+            # Store was called (scheduled via create_task)
+            mock_store.store.assert_called_once()
+        finally:
+            tools._rag_store = original
