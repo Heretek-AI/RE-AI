@@ -1,12 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import {
+  apiFetch,
   useAnalysis,
   type AnalysisResult,
   type DisassemblyResult,
@@ -366,38 +367,133 @@ function ImportsExportsTab({ data }: { data: ImportsExportsResult | null }) {
 
 // ── Strings Tab ────────────────────────────────────────────────────────────
 
-function StringsTab({ data }: { data: StringsResult | null }) {
-  if (!data) return <p className="text-sm text-muted-foreground">No strings data.</p>
+function StringsTab({
+  data,
+  filePath,
+}: {
+  data: StringsResult | null
+  filePath: string
+}) {
+  const [search, setSearch] = useState('')
+  const [minLength, setMinLength] = useState(5)
+  const [localStrings, setLocalStrings] = useState<StringsResult | null>(data)
+  const [loading, setLoading] = useState(false)
+
+  // Sync with parent data when it changes (fresh analysis)
+  const dataStr = JSON.stringify(data)
+  useEffect(() => {
+    setLocalStrings(data)
+  }, [dataStr]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refetch strings with a new min_length
+  const refetch = useCallback(async (min: number) => {
+    setLoading(true)
+    try {
+      const res = await apiFetch<StringsResult>('/analysis/extract-strings', {
+        path: filePath,
+        min_length: min,
+        max_results: 200,
+      })
+      setLocalStrings(res)
+    } catch {
+      // silently swallow — parent error already shown for initial load
+    } finally {
+      setLoading(false)
+    }
+  }, [filePath])
+
+  // Apply client-side search filter
+  const filtered = !localStrings
+    ? []
+    : search.trim()
+      ? localStrings.strings.filter((s) =>
+          s.string.toLowerCase().includes(search.trim().toLowerCase()),
+        )
+      : localStrings.strings
+
+  if (!localStrings) return <p className="text-sm text-muted-foreground">No strings data.</p>
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">
-          Strings
-          {data.truncated && (
-            <span className="ml-2 text-xs font-normal text-muted-foreground">
-              (showing {data.displayed_count} of {data.total_count})
+        <CardTitle className="text-base">Strings</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Controls bar */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            type="text"
+            placeholder="Filter strings..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="max-w-xs"
+          />
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground whitespace-nowrap">
+              Min Length:
+            </label>
+            <select
+              value={minLength}
+              onChange={(e) => {
+                const v = Number(e.target.value)
+                setMinLength(v)
+                refetch(v)
+              }}
+              className="h-9 rounded-md border border-input bg-background px-3 text-xs"
+            >
+              {[5, 10, 15, 20, 50].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </div>
+          {loading && (
+            <div className="border-primary size-4 animate-spin rounded-full border-2 border-t-transparent" />
+          )}
+        </div>
+
+        {/* Summary bar */}
+        <p className="text-xs text-muted-foreground">
+          {search.trim()
+            ? `Showing ${filtered.length} of ${localStrings.total_count} total strings`
+            : `Showing ${localStrings.displayed_count} of ${localStrings.total_count} total strings`}
+          {localStrings.truncated && (
+            <span className="ml-1 text-amber-600 dark:text-amber-400">
+              — truncated. Increase max_results for more.
             </span>
           )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        {data.strings.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No strings found.</p>
+        </p>
+
+        {/* Table */}
+        {localStrings.strings.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {localStrings.truncated
+              ? 'Strings truncated — increase max_results'
+              : 'No strings found.'}
+          </p>
+        ) : filtered.length === 0 && search.trim() ? (
+          <p className="text-sm text-muted-foreground">
+            No strings matching &quot;{search.trim()}&quot;.
+          </p>
         ) : (
           <div className="max-h-96 overflow-y-auto">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b text-muted-foreground sticky top-0 bg-card">
                   <th className="pb-2 pr-4 font-medium">Offset</th>
+                  <th className="pb-2 pr-4 font-medium">Type</th>
                   <th className="pb-2 font-medium">String</th>
                 </tr>
               </thead>
               <tbody>
-                {data.strings.map((s, i) => (
+                {filtered.map((s, i) => (
                   <tr key={i} className="border-b last:border-0">
                     <td className="py-1 pr-4 font-mono text-xs text-muted-foreground whitespace-nowrap">
                       0x{s.offset.toString(16).toUpperCase()}
+                    </td>
+                    <td className="py-1 pr-4 font-mono text-xs text-muted-foreground">
+                      {'—'}
                     </td>
                     <td className="py-1 font-mono text-xs break-all">{s.string}</td>
                   </tr>
@@ -413,37 +509,167 @@ function StringsTab({ data }: { data: StringsResult | null }) {
 
 // ── Disassembly Tab ────────────────────────────────────────────────────────
 
-function DisassemblyTab({ data }: { data: DisassemblyResult | null }) {
-  if (!data) return <p className="text-sm text-muted-foreground">No disassembly data.</p>
+function DisassemblyTab({
+  data,
+  filePath,
+  sections,
+}: {
+  data: DisassemblyResult | null
+  filePath: string
+  sections: { name: string; virtual_address: number }[]
+}) {
+  const [sectionName, setSectionName] = useState(sections[0]?.name ?? '.text')
+  const [offset, setOffset] = useState(0)
+  const [size, setSize] = useState(256)
+  const [localData, setLocalData] = useState<DisassemblyResult | null>(data)
+  const [loading, setLoading] = useState(false)
+
+  // Sync with parent on fresh analysis
+  const dataStr = JSON.stringify(data)
+  useEffect(() => {
+    setLocalData(data)
+  }, [dataStr]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const doDisassemble = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await apiFetch<DisassemblyResult>('/analysis/disassemble', {
+        path: filePath,
+        section_name: sectionName,
+        offset,
+        size,
+      })
+      setLocalData(res)
+    } catch {
+      // silently swallow
+    } finally {
+      setLoading(false)
+    }
+  }, [filePath, sectionName, offset, size])
+
+  const hasInstructions =
+    localData && localData.instructions.length > 0
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
           Disassembly
-          <span className="ml-2 text-xs font-normal text-muted-foreground">
-            {data.architecture} / {data.mode}
-            {data.truncated && ` (truncated at ${data.instructions.length} insns)`}
-          </span>
+          {localData && (
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              {localData.architecture} / {localData.mode}
+              {localData.truncated &&
+                ` (truncated at ${localData.instructions.length} insns)`}
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        <dl className="mb-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <dt>Section:</dt>
-          <dd className="font-mono">{data.section_name}</dd>
-          <dt>Offset:</dt>
-          <dd className="font-mono">0x{data.offset.toString(16).toUpperCase()}</dd>
-          <dt>Bytes:</dt>
-          <dd className="font-mono">{data.bytes_count.toLocaleString()}</dd>
-          <dt>Instructions:</dt>
-          <dd className="font-mono">{data.instructions.length.toLocaleString()}</dd>
-        </dl>
+      <CardContent className="space-y-3">
+        {/* Controls bar */}
+        <div className="flex flex-wrap items-end gap-3">
+          {/* Section selector */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs text-muted-foreground">Section</label>
+            <select
+              value={sectionName}
+              onChange={(e) => setSectionName(e.target.value)}
+              className="h-9 rounded-md border border-input bg-background px-3 text-xs"
+            >
+              {sections.map((sec) => (
+                <option key={sec.name} value={sec.name}>
+                  {sec.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-        {data.instructions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No instructions found.</p>
-        ) : (
+          {/* Offset input */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs text-muted-foreground">
+              Offset (0x{offset.toString(16).toUpperCase()})
+            </label>
+            <Input
+              type="number"
+              min={0}
+              value={offset}
+              onChange={(e) => setOffset(Math.max(0, Number(e.target.value)))}
+              className="w-28"
+            />
+          </div>
+
+          {/* Size input */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs text-muted-foreground">Size (bytes)</label>
+            <Input
+              type="number"
+              min={1}
+              max={4096}
+              value={size}
+              onChange={(e) => setSize(Math.max(1, Number(e.target.value)))}
+              className="w-28"
+            />
+          </div>
+
+          {/* Disassemble button */}
+          <Button
+            type="button"
+            onClick={doDisassemble}
+            disabled={loading}
+          >
+            {loading ? 'Disassembling...' : 'Disassemble'}
+          </Button>
+        </div>
+
+        {/* Metadata summary */}
+        {localData && hasInstructions && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <dt>Section:</dt>
+            <dd className="font-mono">{localData.section_name}</dd>
+            <dt>Offset:</dt>
+            <dd className="font-mono">
+              0x{localData.offset.toString(16).toUpperCase()}
+            </dd>
+            <dt>Bytes:</dt>
+            <dd className="font-mono">
+              {localData.bytes_count.toLocaleString()}
+            </dd>
+            <dt>Instructions:</dt>
+            <dd className="font-mono">
+              {localData.instructions.length.toLocaleString()}
+            </dd>
+          </dl>
+        )}
+
+        {/* Loading indicator */}
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <div className="flex flex-col items-center gap-2">
+              <div className="border-primary size-6 animate-spin rounded-full border-2 border-t-transparent" />
+              <p className="text-xs text-muted-foreground">
+                Disassembling...
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && localData && localData.instructions.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No instructions found in section &quot;{localData.section_name}&quot;.
+          </p>
+        )}
+
+        {/* Pre-disassemble empty state */}
+        {!loading && !localData && (
+          <p className="text-sm text-muted-foreground">
+            Click Disassemble to disassemble the selected section.
+          </p>
+        )}
+
+        {/* Instruction table */}
+        {!loading && hasInstructions && (
           <div className="max-h-96 overflow-y-auto">
-            <table className="w-full text-left text-sm font-mono">
+            <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b text-muted-foreground sticky top-0 bg-card">
                   <th className="pb-2 pr-4 font-medium text-xs">Address</th>
@@ -453,15 +679,17 @@ function DisassemblyTab({ data }: { data: DisassemblyResult | null }) {
                 </tr>
               </thead>
               <tbody>
-                {data.instructions.map((insn, i) => (
+                {localData!.instructions.map((insn, i) => (
                   <tr key={i} className="border-b last:border-0">
-                    <td className="py-0.5 pr-4 text-xs text-muted-foreground whitespace-nowrap">
+                    <td className="py-0.5 pr-4 font-mono text-xs text-muted-foreground whitespace-nowrap">
                       0x{insn.address.toString(16).toUpperCase()}
                     </td>
-                    <td className="py-0.5 pr-4 text-xs text-muted-foreground">
+                    <td className="py-0.5 pr-4 font-mono text-xs text-muted-foreground">
                       {insn.bytes.slice(0, 16)}
                     </td>
-                    <td className="py-0.5 pr-4 text-xs font-semibold">{insn.mnemonic}</td>
+                    <td className="py-0.5 pr-4 text-xs font-semibold">
+                      {insn.mnemonic}
+                    </td>
                     <td className="py-0.5 text-xs">{insn.operands}</td>
                   </tr>
                 ))}
@@ -591,10 +819,22 @@ export function AnalysisPage() {
               <ImportsExportsTab data={result.importsExports} />
             </TabPanel>
             <TabPanel active={activeTab === 'strings'}>
-              <StringsTab data={result.strings} />
+              <StringsTab
+                data={result.strings}
+                filePath={filePath}
+              />
             </TabPanel>
             <TabPanel active={activeTab === 'disassembly'}>
-              <DisassemblyTab data={result.disassembly} />
+              <DisassemblyTab
+                data={result.disassembly}
+                filePath={filePath}
+                sections={
+                  result.peStructure?.sections.map((s) => ({
+                    name: s.name,
+                    virtual_address: s.virtual_address,
+                  })) ?? []
+                }
+              />
             </TabPanel>
           </div>
         </div>

@@ -99,9 +99,9 @@ export interface UseAnalysisReturn {
 
 // ── Generic API fetch helper ────────────────────────────────────────────
 
-const API_BASE = '/api'
+export const API_BASE = '/api'
 
-async function apiFetch<T>(path: string, body: unknown): Promise<T> {
+export async function apiFetch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
