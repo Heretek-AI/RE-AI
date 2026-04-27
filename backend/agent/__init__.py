@@ -7,7 +7,7 @@ from backend.agent.provider import (
     OpenAIProvider,
     get_provider,
 )
-from backend.agent.tools import ToolDef, execute_tool_call, get_tool_schemas
+from backend.agent.tools import ToolDef, execute_tool_call, get_tool_schemas, set_rag_store
 
 __all__ = [
     "BaseProvider",
@@ -18,4 +18,5 @@ __all__ = [
     "ToolDef",
     "get_tool_schemas",
     "execute_tool_call",
+    "set_rag_store",
 ]

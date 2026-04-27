@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from backend.engine.models import TaskCreate, TaskResponse
 from backend.engine.planning import PlanningEngine
+from backend.rag.base import BaseVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,84 @@ async def _exec_get_slice_tasks(args: dict[str, Any], engine: PlanningEngine) ->
 
 
 # ---------------------------------------------------------------------------
+# RAG store — set by backend/main.py lifespan startup
+# ---------------------------------------------------------------------------
+
+_rag_store: Optional[BaseVectorStore] = None
+
+
+def set_rag_store(store: Optional[BaseVectorStore]) -> None:
+    """Set the global RAG vector store reference.
+
+    Called from ``backend/main.py`` lifespan startup after the vector
+    store is initialized.  Pass ``None`` to disable RAG capabilities.
+    """
+    global _rag_store
+    _rag_store = store
+
+
+async def _exec_rag_search(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """Search past analysis findings, tool results, and conversation context.
+
+    Queries the vector database across the specified collections and
+    returns formatted results.
+    """
+    if _rag_store is None:
+        return (
+            "ERROR: RAG vector store is not available "
+            "(not configured or Chroma not installed)."
+        )
+
+    query: str = args.get("query", "")
+    top_k: int = args.get("top_k", 5)
+    collections: list[str] = args.get(
+        "collections", ["tool_results", "conversation"]
+    )
+
+    if not query.strip():
+        return "ERROR: No search query provided."
+
+    all_results: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+
+    for collection in collections:
+        try:
+            results = await _rag_store.search(collection, query, top_k)
+        except Exception:
+            logger.exception("RAG search error on collection %r", collection)
+            continue
+
+        for item in results:
+            text = item.get("text", "")
+            # Deduplicate across collections
+            if text not in seen_texts:
+                seen_texts.add(text)
+                all_results.append(item)
+
+    # Sort by score descending
+    all_results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
+    all_results = all_results[:top_k]
+
+    if not all_results:
+        return f"No relevant findings found for '{query}'."
+
+    lines = [f"## RAG Search Results: '{query}'", ""]
+    for i, item in enumerate(all_results, 1):
+        score = item.get("score", 0.0)
+        text = item.get("text", "")
+        metadata = item.get("metadata", {})
+        source = metadata.get("role", metadata.get("tool_name", "unknown"))
+
+        lines.append(f"### Result {i} (score: {score:.3f}, source: {source})")
+        # Truncate text to avoid excessive response size
+        display_text = text[:800] + ("..." if len(text) > 800 else "")
+        lines.append(display_text)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
 
@@ -295,6 +374,38 @@ TOOLS: list[ToolDef] = [
             "required": ["slice_id"],
         },
         async_execute=_exec_get_slice_tasks,
+    ),
+    ToolDef(
+        name="rag_search",
+        description=(
+            "Search past analysis findings, tool results, and conversation "
+            "context stored in the vector database. Use this when you need "
+            "to recall what was previously discovered about a topic."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default: 5).",
+                    "default": 5,
+                },
+                "collections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional: collections to search (default: "
+                        "both tool_results and conversation)."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+        async_execute=_exec_rag_search,
     ),
 ]
 

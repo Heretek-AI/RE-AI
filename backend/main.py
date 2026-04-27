@@ -16,10 +16,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from backend.agent.tools import set_rag_store
 from backend.api.chat_ws import router as chat_ws_router
 from backend.api.config import router as config_router
 from backend.api.health import router as health_router
 from backend.api.milestones import router as milestones_router
+from backend.api.rag import router as rag_router
 from backend.api.registry import router as registry_router
 from backend.api.slices import router as slices_router
 from backend.api.tasks import router as tasks_router
@@ -45,6 +47,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "vector_db_type": settings.vector_db_type,
         "chroma_persist_dir": settings.chroma_persist_dir,
     })
+    # Make the vector store accessible to agent tools via the global reference
+    set_rag_store(app.state.vector_store)
     logger.info(
         "Vector store initialization complete (type=%s)",
         settings.vector_db_type,
@@ -76,6 +80,7 @@ app.add_middleware(
 app.include_router(config_router)
 app.include_router(health_router)
 app.include_router(milestones_router)
+app.include_router(rag_router)
 app.include_router(registry_router)
 app.include_router(slices_router)
 app.include_router(tasks_router)

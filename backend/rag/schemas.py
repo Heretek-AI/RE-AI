@@ -10,11 +10,16 @@ from pydantic import BaseModel
 
 
 class SearchRequest(BaseModel):
-    """Request body for a vector search."""
+    """Request body for a vector search.
+
+    By default searches both ``tool_results`` and ``conversation``
+    collections.  Use ``collections`` to restrict to a subset or provide
+    custom collection names.
+    """
 
     query: str
     top_k: int = 5
-    collection: str = "findings"
+    collections: list[str] = ["tool_results", "conversation"]
 
 
 class SearchResult(BaseModel):
@@ -29,3 +34,4 @@ class SearchResponse(BaseModel):
     """Response envelope for a vector search."""
 
     results: list[SearchResult]
+    error: str = ""
