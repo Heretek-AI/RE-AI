@@ -152,6 +152,17 @@ async def extract_strings(body: ExtractStringsRequest) -> dict[str, Any]:
     return result
 
 
+@router.post("/get-file-info")
+async def get_file_info(body: PathRequest) -> dict[str, Any]:
+    """Return high-level file metadata (size, hashes, PE flag, etc.).
+
+    Returns size_bytes, MD5, SHA256, architecture, is_dll/is_exe flags,
+    entry point, and subsystem.
+    """
+    logger.debug("POST /api/analysis/get-file-info: %s", body.path)
+    return await _run_analysis("get_file_info", path=body.path)
+
+
 @router.post("/disassemble")
 async def disassemble(body: DisassembleRequest) -> dict[str, Any]:
     """Disassemble a code region from a PE/DLL file section.

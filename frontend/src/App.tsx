@@ -4,6 +4,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { SetupWizard } from '@/components/wizard/SetupWizard'
 import { ChatPage } from '@/pages/ChatPage'
 import { KanbanPage } from '@/pages/KanbanPage'
+import { AnalysisPage } from '@/pages/AnalysisPage'
 
 function Dashboard() {
   return (
@@ -24,7 +25,7 @@ function MainPage() {
 
   return (
     <AppLayout currentPage={page} onNavigate={setPage}>
-      {page === 'tasks' ? <KanbanPage /> : page === 'chat' ? <ChatPage /> : <Dashboard />}
+      {page === 'analysis' ? <AnalysisPage /> : page === 'tasks' ? <KanbanPage /> : page === 'chat' ? <ChatPage /> : <Dashboard />}
     </AppLayout>
   )
 }

@@ -10,6 +10,7 @@ interface SidebarProps {
 
 const navItems = [
   { label: 'Dashboard', icon: 'LayoutDashboard', page: 'dashboard' },
+  { label: 'Analysis', icon: 'Search', page: 'analysis' },
   { label: 'Tasks', icon: 'ListChecks', page: 'tasks' },
   { label: 'Chat', icon: 'MessageSquare', page: 'chat' },
   { label: 'Settings', icon: 'Settings', page: 'settings' },
@@ -99,6 +100,13 @@ function NavIcon({ name }: { name: string }) {
           <rect x="14" y="3" width="7" height="5" />
           <rect x="14" y="12" width="7" height="9" />
           <rect x="3" y="16" width="7" height="5" />
+        </svg>
+      )
+    case 'Search':
+      return (
+        <svg {...props}>
+          <circle cx="11" cy="11" r="8" />
+          <path d="M21 21l-4.35-4.35" />
         </svg>
       )
     case 'ListChecks':
