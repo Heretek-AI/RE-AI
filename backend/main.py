@@ -55,6 +55,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.vector_db_type,
     )
 
+    # Load and apply skill enrichments from skills/*.md
+    # Skill files teach the agent how to use specific analysis backends
+    # (pefile, capstone, IDA Pro, Ghidra) and orchestrate analysis workflows.
+    # Non-fatal: missing or empty skills/ directory returns an empty list.
+    ToolRegistry.get_instance().load_skills()
+
     yield
     # --- Shutdown ---
     # Shut down all MCP server subprocesses
