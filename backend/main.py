@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from backend.api.chat_ws import router as chat_ws_router
 from backend.api.config import router as config_router
 from backend.api.health import router as health_router
 from backend.api.milestones import router as milestones_router
@@ -60,6 +61,7 @@ app.include_router(slices_router)
 app.include_router(tasks_router)
 app.include_router(tools_router)
 app.include_router(ws_router)
+app.include_router(chat_ws_router)
 
 # --- Static files (if directory exists) ---
 static_dir = Path(__file__).resolve().parent / "static"
