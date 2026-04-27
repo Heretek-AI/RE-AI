@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from backend.analysis import AnalysisError, get_analysis_backend
 from backend.engine.models import TaskCreate, TaskResponse
 from backend.engine.planning import PlanningEngine
 from backend.rag.base import BaseVectorStore
@@ -266,6 +267,281 @@ async def _exec_rag_search(args: dict[str, Any], engine: PlanningEngine) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Analysis tool implementations
+# ---------------------------------------------------------------------------
+
+
+async def _exec_extract_pe_info(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """Extract PE header structure information from a PE/DLL file."""
+    path: str = args.get("path", "")
+    if not path:
+        return "ERROR: No path provided."
+
+    try:
+        backend = get_analysis_backend({})
+        result = await backend.analyze_pe_structure(path)
+    except AnalysisError as exc:
+        return f"ERROR: {exc}"
+    except FileNotFoundError as exc:
+        return f"ERROR: File not found: {exc}"
+    except Exception as exc:
+        logger.exception("extract_pe_info error")
+        return f"ERROR: {exc}"
+
+    lines = [
+        f"## PE Structure: {path}",
+        "",
+        f"- **Machine type:** {result.get('machine_type', '?')}",
+        f"- **Characteristics:** {result.get('characteristics', '?')}",
+        f"- **Is DLL:** {result.get('is_dll', '?')}",
+        f"- **Is EXE:** {result.get('is_exe', '?')}",
+        f"- **Entry point:** {result.get('entry_point', '?')} (0x{result.get('entry_point', 0):x})",
+        f"- **Image base:** 0x{result.get('image_base', 0):x}",
+        f"- **Size of image:** {result.get('size_of_image', 0)} bytes",
+        f"- **Imphash:** {result.get('imphash', 'N/A')}",
+        "",
+        "### Subsystems",
+    ]
+    subs = result.get("subsystems", [])
+    for s in subs:
+        lines.append(f"- {s}")
+    lines.append("")
+    lines.append("### Sections")
+    lines.append("")
+    lines.append("| Name | Virtual Address | Virtual Size | Raw Size | Characteristics |")
+    lines.append("|------|-----------------|-------------|----------|----------------|")
+    for sec in result.get("sections", []):
+        lines.append(
+            f"| {sec.get('name', '?')} | "
+            f"0x{sec.get('virtual_address', 0):x} | "
+            f"0x{sec.get('virtual_size', 0):x} | "
+            f"{sec.get('size_of_raw_data', 0)} | "
+            f"{sec.get('characteristics', '?')} |"
+        )
+    return "\n".join(lines)
+
+
+async def _exec_list_imports_exports(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """List import and export tables of a PE/DLL file."""
+    path: str = args.get("path", "")
+    if not path:
+        return "ERROR: No path provided."
+
+    try:
+        backend = get_analysis_backend({})
+        result = await backend.get_imports_exports(path)
+    except AnalysisError as exc:
+        return f"ERROR: {exc}"
+    except FileNotFoundError as exc:
+        return f"ERROR: File not found: {exc}"
+    except Exception as exc:
+        logger.exception("list_imports_exports error")
+        return f"ERROR: {exc}"
+
+    lines = [f"## Imports & Exports: {path}", ""]
+
+    imports = result.get("imports", [])
+    if imports:
+        lines.append(f"### Imports ({len(imports)} DLLs)")
+        lines.append("")
+        for dll_entry in imports:
+            dll_name = dll_entry.get("dll", "?")
+            funcs = dll_entry.get("imports", [])
+            lines.append(f"**{dll_name}** ({len(funcs)} functions)")
+            for f in funcs:
+                fname = f.get("name", f"(ordinal {f.get('ordinal', '?')})")
+                by_ord = " [by ordinal]" if f.get("import_by_ordinal") else ""
+                lines.append(f"  - {fname}{by_ord}")
+            lines.append("")
+    else:
+        lines.append("*No imports found.*")
+        lines.append("")
+
+    exports = result.get("exports", [])
+    if exports:
+        lines.append(f"### Exports ({len(exports)} symbols)")
+        lines.append("")
+        lines.append("| Name | Ordinal | Address |")
+        lines.append("|------|---------|---------|")
+        for exp in exports:
+            ename = exp.get("name", f"(ordinal {exp.get('ordinal', '?')})")
+            addr = exp.get("address", 0)
+            lines.append(f"| {ename} | {exp.get('ordinal', '?')} | 0x{addr:x} |")
+    else:
+        lines.append("*No exports found.*")
+
+    return "\n".join(lines)
+
+
+async def _exec_extract_strings(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """Extract printable ASCII/Unicode strings from a PE/DLL file."""
+    path: str = args.get("path", "")
+    min_length: int = args.get("min_length", 5)
+    max_results: int = args.get("max_results", 200)
+
+    if not path:
+        return "ERROR: No path provided."
+
+    try:
+        backend = get_analysis_backend({})
+        result = await backend.extract_strings(path, min_length)
+    except AnalysisError as exc:
+        return f"ERROR: {exc}"
+    except FileNotFoundError as exc:
+        return f"ERROR: File not found: {exc}"
+    except Exception as exc:
+        logger.exception("extract_strings error")
+        return f"ERROR: {exc}"
+
+    strings_list = result.get("strings", [])
+    total_count = result.get("total_count", 0)
+
+    # Apply max_results cap here (the backend caps at 200 already, but honour the tool arg)
+    display_list = strings_list[:max_results]
+
+    lines = [
+        f"## Strings: {path}",
+        "",
+        f"Total strings found: {total_count}",
+        f"Displaying: {len(display_list)}",
+        "",
+        "| Offset | Type | String |",
+        "|--------|------|--------|",
+    ]
+    for entry in display_list:
+        offset = entry.get("offset", 0)
+        text = entry.get("string", "")
+        # Truncate very long strings for display
+        if len(text) > 120:
+            text = text[:120] + "..."
+        s_type = "ASCII" if all(32 <= ord(c) < 127 for c in text) else "Unicode"
+        lines.append(f"| 0x{offset:x} | {s_type} | {text} |")
+
+    if total_count > len(display_list):
+        lines.append("")
+        lines.append(f"*{total_count - len(display_list)} more strings not shown (use max_results to increase limit).*")
+
+    return "\n".join(lines)
+
+
+async def _exec_disassemble_function(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """Disassemble a function from a PE/DLL file section."""
+    path: str = args.get("path", "")
+    section_name: str = args.get("section_name", "")
+    offset: int = args.get("offset", 0)
+    size: int = args.get("size", 256)
+
+    if not path:
+        return "ERROR: No path provided."
+    if not section_name:
+        return "ERROR: No section_name provided."
+
+    try:
+        backend = get_analysis_backend({})
+        result = await backend.disassemble_function(path, section_name, offset, size)
+    except AnalysisError as exc:
+        return f"ERROR: {exc}"
+    except FileNotFoundError as exc:
+        return f"ERROR: File not found: {exc}"
+    except Exception as exc:
+        logger.exception("disassemble_function error")
+        return f"ERROR: {exc}"
+
+    lines = [
+        f"## Disassembly: {path}",
+        "",
+        f"- **Architecture:** {result.get('architecture', '?')}",
+        f"- **Mode:** {result.get('mode', '?')}",
+        f"- **Section:** {result.get('section_name', '?')}",
+        f"- **Offset:** 0x{result.get('offset', 0):x}",
+        f"- **Bytes analyzed:** {result.get('bytes_count', 0)}",
+        "",
+        "### Instructions",
+        "",
+        "| Address | Bytes | Instruction |",
+        "|---------|-------|-------------|",
+    ]
+    for insn in result.get("instructions", []):
+        addr = insn.get("address", 0)
+        raw_bytes = insn.get("bytes", "")
+        mnemonic = insn.get("mnemonic", "")
+        operands = insn.get("operands", "")
+        if operands:
+            instr_text = f"{mnemonic} {operands}"
+        else:
+            instr_text = mnemonic
+        lines.append(f"| 0x{addr:x} | `{raw_bytes}` | {instr_text} |")
+
+    if result.get("truncated"):
+        lines.append("")
+        lines.append("*Disassembly truncated (more than 500 instructions).*")
+
+    return "\n".join(lines)
+
+
+async def _exec_analyze_directory(args: dict[str, Any], engine: PlanningEngine) -> str:
+    """Analyze all PE/DLL files in a directory."""
+    directory: str = args.get("directory", "")
+    if not directory:
+        return "ERROR: No directory provided."
+    if not os.path.isdir(directory):
+        return f"ERROR: Directory not found: {directory}"
+
+    backend = get_analysis_backend({})
+
+    # Collect PE files
+    pe_files: list[str] = []
+    non_pe_files: list[str] = []
+    try:
+        for entry in os.listdir(directory):
+            if entry.lower().endswith((".exe", ".dll")):
+                pe_files.append(os.path.join(directory, entry))
+            else:
+                non_pe_files.append(os.path.join(directory, entry))
+    except PermissionError:
+        return f"ERROR: Permission denied reading directory: {directory}"
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    if not pe_files:
+        skipped_note = f" ({len(non_pe_files)} non-PE files skipped)" if non_pe_files else ""
+        return f"No PE files found in {directory}{skipped_note}."
+
+    lines = [
+        f"## Directory Analysis: {directory}",
+        "",
+        f"Found {len(pe_files)} PE file(s) in {directory}.",
+    ]
+    if non_pe_files:
+        lines.append(f"({len(non_pe_files)} non-PE file(s) skipped.)")
+        lines.append("")
+
+    lines.append("")
+    lines.append("| File | Size | Architecture | Type | Entry Point | Imphash |")
+    lines.append("|------|------|--------------|------|-------------|---------|")
+
+    for file_path in pe_files:
+        try:
+            info = await backend.get_file_info(file_path)
+            structure = await backend.analyze_pe_structure(file_path)
+            fname = os.path.basename(file_path)
+            size = info.get("size_bytes", 0)
+            arch = info.get("architecture", "?")
+            ftype = "DLL" if info.get("is_dll") else "EXE" if info.get("is_exe") else "?"
+            ep = structure.get("entry_point", 0)
+            imphash = structure.get("imphash", "N/A") or "N/A"
+            size_str = f"{size:,}" if size else "?"
+            lines.append(f"| {fname} | {size_str} B | {arch} | {ftype} | 0x{ep:x} | {imphash} |")
+        except AnalysisError:
+            lines.append(f"| {os.path.basename(file_path)} | — | — | — | — | (parse error) |")
+        except Exception as exc:
+            logger.exception("analyze_directory error for %s", file_path)
+            lines.append(f"| {os.path.basename(file_path)} | — | — | — | — | (error: {exc}) |")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
 
@@ -374,6 +650,122 @@ TOOLS: list[ToolDef] = [
             "required": ["slice_id"],
         },
         async_execute=_exec_get_slice_tasks,
+    ),
+    ToolDef(
+        name="extract_pe_info",
+        description=(
+            "Extract PE header structure from a PE/DLL file. "
+            "Returns machine type, characteristics, sections, entry point, "
+            "image base, size, and imphash."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the PE or DLL file.",
+                },
+            },
+            "required": ["path"],
+        },
+        async_execute=_exec_extract_pe_info,
+    ),
+    ToolDef(
+        name="list_imports_exports",
+        description=(
+            "List imported and exported functions from a PE/DLL file. "
+            "Returns import tables grouped by DLL and export symbols."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the PE or DLL file.",
+                },
+            },
+            "required": ["path"],
+        },
+        async_execute=_exec_list_imports_exports,
+    ),
+    ToolDef(
+        name="extract_strings",
+        description=(
+            "Extract printable ASCII and Unicode strings from a PE/DLL file. "
+            "Returns a table of offsets, types, and string values."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the PE or DLL file.",
+                },
+                "min_length": {
+                    "type": "integer",
+                    "description": "Minimum string length (default: 5).",
+                    "default": 5,
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of strings to return (default: 200).",
+                    "default": 200,
+                },
+            },
+            "required": ["path"],
+        },
+        async_execute=_exec_extract_strings,
+    ),
+    ToolDef(
+        name="disassemble_function",
+        description=(
+            "Disassemble code from a specific section of a PE/DLL file. "
+            "Returns an instruction listing with addresses and raw bytes."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the PE or DLL file.",
+                },
+                "section_name": {
+                    "type": "string",
+                    "description": "Name of the section to disassemble (e.g. .text).",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Byte offset within the section to start.",
+                },
+                "size": {
+                    "type": "integer",
+                    "description": "Number of bytes to disassemble (default: 256).",
+                    "default": 256,
+                },
+            },
+            "required": ["path", "section_name", "offset"],
+        },
+        async_execute=_exec_disassemble_function,
+    ),
+    ToolDef(
+        name="analyze_directory",
+        description=(
+            "Analyze all PE/DLL files in a directory. "
+            "Scans for *.exe and *.dll files and returns basic info for each: "
+            "size, architecture, type (DLL/EXE), entry point, and imphash. "
+            "Non-PE files are skipped with a note."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "directory": {
+                    "type": "string",
+                    "description": "Path to the directory to scan.",
+                },
+            },
+            "required": ["directory"],
+        },
+        async_execute=_exec_analyze_directory,
     ),
     ToolDef(
         name="rag_search",

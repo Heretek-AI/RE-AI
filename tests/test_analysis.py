@@ -381,3 +381,320 @@ class TestAnalysisRegistry:
         for b in backends:
             assert "name" in b
             assert "description" in b
+
+
+# ---------------------------------------------------------------------------
+# T05 — Analysis ToolDefs in agent tools
+# ---------------------------------------------------------------------------
+
+
+class TestAnalysisToolDefs:
+    """Integration tests for the 5 analysis ToolDefs in backend/agent/tools.py.
+
+    These tests call execute_tool_call() with a mock PlanningEngine (the
+    analysis tools don't use the engine — it's passed as required by the
+    ToolDef API). The real backend (NativePythonBackend) performs actual
+    analysis on fixture PE files.
+    """
+
+    FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+    TEST_DLL = str(FIXTURE_DIR / "minimal_test.dll")
+    TEST_ARM = str(FIXTURE_DIR / "test_arm.dll")
+
+    @pytest.fixture()
+    def mock_engine(self):
+        """Return a minimal mock PlanningEngine (unused by analysis tools)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        return AsyncMock()
+
+    @pytest.fixture(autouse=True)
+    def _import_tools(self):
+        """Lazy import the tools module so the analysis backend is importable."""
+        from backend.agent import tools as _tools
+
+        self.tools = _tools
+
+    # ── extract_pe_info ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_extract_pe_info_tool(self, mock_engine) -> None:
+        """extract_pe_info returns PE structure with machine type and sections."""
+        result = await self.tools.execute_tool_call(
+            "extract_pe_info",
+            {"path": self.TEST_DLL},
+            mock_engine,
+        )
+        assert "## PE Structure" in result
+        assert "AMD64" in result
+        assert ".text" in result
+        assert ".data" in result
+        assert "0x180000000" in result  # image base
+
+    @pytest.mark.asyncio
+    async def test_extract_pe_info_arm(self, mock_engine) -> None:
+        """ARM PE reports ARM machine type."""
+        result = await self.tools.execute_tool_call(
+            "extract_pe_info",
+            {"path": self.TEST_ARM},
+            mock_engine,
+        )
+        assert "## PE Structure" in result
+        assert "ARM" in result
+
+    # ── list_imports_exports ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_list_imports_exports_tool(self, mock_engine) -> None:
+        """list_imports_exports returns Imports / Exports sections."""
+        result = await self.tools.execute_tool_call(
+            "list_imports_exports",
+            {"path": self.TEST_DLL},
+            mock_engine,
+        )
+        assert "## Imports & Exports" in result
+        assert "No imports found" in result
+        assert "No exports found" in result
+
+    # ── extract_strings ────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_extract_strings_tool(self, mock_engine) -> None:
+        """extract_strings finds 'HelloFromREAI' string."""
+        result = await self.tools.execute_tool_call(
+            "extract_strings",
+            {"path": self.TEST_DLL},
+            mock_engine,
+        )
+        assert "## Strings" in result
+        assert "HelloFromREAI" in result
+        assert "REAI_ANALYSIS" in result
+
+    @pytest.mark.asyncio
+    async def test_extract_strings_min_length(self, mock_engine) -> None:
+        """Strings with min_length=10 excludes shorter strings."""
+        result = await self.tools.execute_tool_call(
+            "extract_strings",
+            {"path": self.TEST_DLL, "min_length": 10},
+            mock_engine,
+        )
+        assert "HelloFromREAI" in result
+        assert "REAI_v1.0" not in result  # 9 chars
+
+    @pytest.mark.asyncio
+    async def test_extract_strings_max_results(self, mock_engine) -> None:
+        """max_results caps the number of displayed strings."""
+        result = await self.tools.execute_tool_call(
+            "extract_strings",
+            {"path": self.TEST_DLL, "max_results": 1},
+            mock_engine,
+        )
+        assert "## Strings" in result
+        # Should only show 1 string + the "more strings not shown" note
+        assert "more strings not shown" in result
+
+    # ── disassemble_function ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_disassemble_function_tool(self, mock_engine) -> None:
+        """Disassemble .text at offset 0 shows at least one instruction."""
+        result = await self.tools.execute_tool_call(
+            "disassemble_function",
+            {"path": self.TEST_DLL, "section_name": ".text", "offset": 0, "size": 16},
+            mock_engine,
+        )
+        assert "## Disassembly" in result
+        assert "AMD64" in result
+        assert "ret" in result  # first instruction is ret
+
+    # ── analyze_directory ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_analyze_directory_tool(self, mock_engine, tmp_path) -> None:
+        """Analyze a temp dir with fixture DLLs."""
+        import shutil
+
+        # Copy fixture DLLs to temp dir
+        shutil.copy2(self.TEST_DLL, str(tmp_path / "minimal_test.dll"))
+        # Add a non-PE file to test skipping
+        (tmp_path / "notes.txt").write_text("This is not a PE file.\n")
+        # Add a non-exe/dll file that should be skipped
+        (tmp_path / "data.bin").write_bytes(b"\x00" * 64)
+
+        result = await self.tools.execute_tool_call(
+            "analyze_directory",
+            {"directory": str(tmp_path)},
+            mock_engine,
+        )
+        assert "## Directory Analysis" in result
+        assert "minimal_test.dll" in result
+        assert "AMD64" in result
+        assert "DLL" in result
+        assert "1 PE file(s)" in result
+        assert "non-PE file(s) skipped" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_directory_empty(self, mock_engine, tmp_path) -> None:
+        """Empty directory returns 'No PE files found'."""
+        result = await self.tools.execute_tool_call(
+            "analyze_directory",
+            {"directory": str(tmp_path)},
+            mock_engine,
+        )
+        assert "No PE files found" in result
+
+    @pytest.mark.asyncio
+    async def test_analyze_directory_missing(self, mock_engine) -> None:
+        """Non-existent directory returns ERROR."""
+        result = await self.tools.execute_tool_call(
+            "analyze_directory",
+            {"directory": "/nonexistent/path"},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    # ── Error handling: invalid paths ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_tool_invalid_path_extract_pe(self, mock_engine) -> None:
+        """extract_pe_info returns ERROR for non-existent path."""
+        result = await self.tools.execute_tool_call(
+            "extract_pe_info",
+            {"path": "/nonexistent/file.dll"},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_invalid_path_imports_exports(self, mock_engine) -> None:
+        """list_imports_exports returns ERROR for non-existent path."""
+        result = await self.tools.execute_tool_call(
+            "list_imports_exports",
+            {"path": "/nonexistent/file.dll"},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_invalid_path_strings(self, mock_engine) -> None:
+        """extract_strings returns ERROR for non-existent path."""
+        result = await self.tools.execute_tool_call(
+            "extract_strings",
+            {"path": "/nonexistent/file.dll"},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_invalid_path_disassemble(self, mock_engine) -> None:
+        """disassemble_function returns ERROR for non-existent path."""
+        result = await self.tools.execute_tool_call(
+            "disassemble_function",
+            {"path": "/nonexistent/file.dll", "section_name": ".text", "offset": 0},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_invalid_path_analyze_dir(self, mock_engine) -> None:
+        """analyze_directory returns ERROR for non-existent path."""
+        result = await self.tools.execute_tool_call(
+            "analyze_directory",
+            {"directory": "/nonexistent/dir"},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    # ── Error handling: not a PE file ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_tool_not_a_pe_extract_pe(self, mock_engine, tmp_path) -> None:
+        """extract_pe_info returns ERROR for non-PE file."""
+        non_pe = tmp_path / "not_a_pe.bin"
+        non_pe.write_bytes(b"\x00" * 128)
+        result = await self.tools.execute_tool_call(
+            "extract_pe_info",
+            {"path": str(non_pe)},
+            mock_engine,
+        )
+        # The underlying backend raises AnalysisError — tool catches it
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_not_a_pe_imports_exports(self, mock_engine, tmp_path) -> None:
+        """list_imports_exports returns ERROR for non-PE file."""
+        non_pe = tmp_path / "not_a_pe.bin"
+        non_pe.write_bytes(b"\x00" * 128)
+        result = await self.tools.execute_tool_call(
+            "list_imports_exports",
+            {"path": str(non_pe)},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_not_a_pe_strings(self, mock_engine, tmp_path) -> None:
+        """extract_strings returns ERROR for non-PE file."""
+        non_pe = tmp_path / "not_a_pe.bin"
+        non_pe.write_bytes(b"\x00" * 128)
+        result = await self.tools.execute_tool_call(
+            "extract_strings",
+            {"path": str(non_pe)},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_not_a_pe_disassemble(self, mock_engine, tmp_path) -> None:
+        """disassemble_function returns ERROR for non-PE file."""
+        non_pe = tmp_path / "not_a_pe.bin"
+        non_pe.write_bytes(b"\x00" * 128)
+        result = await self.tools.execute_tool_call(
+            "disassemble_function",
+            {"path": str(non_pe), "section_name": ".text", "offset": 0},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    # ── Schema registration ────────────────────────────────────────────
+
+    def test_tool_schema_registration(self) -> None:
+        """All 5 analysis tool names appear in get_tool_schemas()."""
+        schemas = self.tools.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        for expected in (
+            "extract_pe_info",
+            "list_imports_exports",
+            "extract_strings",
+            "disassemble_function",
+            "analyze_directory",
+        ):
+            assert expected in names, f"Tool {expected!r} missing from get_tool_schemas()"
+
+    # ── Missing arguments → ERROR ──────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_tool_missing_path_extract_pe(self, mock_engine) -> None:
+        """extract_pe_info with no path returns ERROR."""
+        result = await self.tools.execute_tool_call(
+            "extract_pe_info", {}, mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_missing_section_name(self, mock_engine) -> None:
+        """disassemble_function with missing section_name returns ERROR."""
+        result = await self.tools.execute_tool_call(
+            "disassemble_function",
+            {"path": self.TEST_DLL},
+            mock_engine,
+        )
+        assert result.startswith("ERROR:")
+
+    @pytest.mark.asyncio
+    async def test_tool_missing_directory(self, mock_engine) -> None:
+        """analyze_directory with no directory returns ERROR."""
+        result = await self.tools.execute_tool_call(
+            "analyze_directory", {}, mock_engine,
+        )
+        assert result.startswith("ERROR:")
