@@ -20,7 +20,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from backend.analysis import AnalysisError, get_analysis_backend
@@ -330,7 +330,7 @@ async def _exec_extract_pe_info(args: dict[str, Any], engine: PlanningEngine) ->
                 {
                     "tool_name": "extract_pe_info",
                     "path": path,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "role": "tool_result",
                 },
             )
@@ -399,7 +399,7 @@ async def _exec_list_imports_exports(args: dict[str, Any], engine: PlanningEngin
                 {
                     "tool_name": "list_imports_exports",
                     "path": path,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "role": "tool_result",
                 },
             )
@@ -467,7 +467,7 @@ async def _exec_extract_strings(args: dict[str, Any], engine: PlanningEngine) ->
                 {
                     "tool_name": "extract_strings",
                     "path": path,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "role": "tool_result",
                 },
             )
@@ -539,7 +539,7 @@ async def _exec_disassemble_function(args: dict[str, Any], engine: PlanningEngin
                 {
                     "tool_name": "disassemble_function",
                     "path": path,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "role": "tool_result",
                 },
             )
@@ -618,7 +618,7 @@ async def _exec_analyze_directory(args: dict[str, Any], engine: PlanningEngine) 
                 {
                     "tool_name": "analyze_directory",
                     "path": directory,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "role": "tool_result",
                 },
             )
